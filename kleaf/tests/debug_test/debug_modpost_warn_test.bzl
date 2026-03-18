@@ -16,9 +16,9 @@
 
 load("@bazel_skylib//lib:unittest.bzl", "analysistest", "asserts")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
-load("//build/kernel/kleaf/impl:ddk/ddk_module.bzl", "ddk_module")
 load("//build/kernel/kleaf/impl:kernel_build.bzl", "kernel_build")
 load("//build/kernel/kleaf/impl:kernel_module.bzl", "kernel_module")
+load("//build/kernel/kleaf/impl:ddk/ddk_module.bzl", "ddk_module")
 load("//build/kernel/kleaf/tests:test_utils.bzl", "test_utils")
 
 def _modpost_warn_module_test_impl(ctx):
@@ -51,7 +51,7 @@ _modpost_warn_module_test = analysistest.make(
         "is_ddk_test": attr.bool(),
     },
     config_settings = {
-        str(Label("//build/kernel/kleaf:debug_modpost_warn")): True,
+        "@//build/kernel/kleaf:debug_modpost_warn": True,
     },
 )
 

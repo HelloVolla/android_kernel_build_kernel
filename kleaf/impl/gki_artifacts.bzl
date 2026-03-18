@@ -22,8 +22,6 @@ load(":constants.bzl", "GKI_ARTIFACTS_AARCH64_OUTS")
 load(":hermetic_toolchain.bzl", "hermetic_toolchain")
 load(":utils.bzl", "utils")
 
-visibility("//build/kernel/kleaf/...")
-
 def _gki_artifacts_impl(ctx):
     hermetic_tools = hermetic_toolchain.get(ctx)
     inputs = [
@@ -147,7 +145,7 @@ gki_artifacts = rule(
     attrs = {
         "kernel_build": attr.label(
             providers = [KernelBuildUnameInfo],
-            doc = "The [`kernel_build`](kernel.md#kernel_build) that provides all `Image` and `Image.*`.",
+            doc = "The [`kernel_build`](#kernel_build) that provides all `Image` and `Image.*`.",
         ),
         "mkbootimg": attr.label(
             allow_single_file = True,
@@ -215,7 +213,8 @@ def _gki_artifacts_prebuilts_impl(ctx):
 
         # The result of ctx.actions.declare_directory(ctx.label.name).path without declaring it
         ruledir = paths.join(
-            utils.package_bin_dir(ctx),
+            ctx.bin_dir.path,
+            paths.dirname(ctx.build_file_path),
             ctx.attr.name,
         )
 

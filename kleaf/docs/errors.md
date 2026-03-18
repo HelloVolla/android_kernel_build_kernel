@@ -265,8 +265,8 @@ still see this error, it may be due to left-over directories from builds before
 If you try to `rm -rf out/` and get the above message, this is because Bazel
 removes the write permission on output directories.
 
-It is not needed to clean the output directory for consistency of build
-results.
+Unlike with `build.sh`, it is no longer needed to clean the output
+directory for consistency of build results.
 
 However, if you need to clean the `out/` directory to
 save disk space, you may run `tools/bazel clean`. See
@@ -275,10 +275,13 @@ documentation for the `clean` command
 
 ## cp: <workspace\_root>/out/bazel/output\_user\_root/[...]/execroot/\_\_main\_\_/[...]/[...]_defconfig: Read-only file system {#defconfig-readonly}
 
-This is likely because a previous `--config=local` build was interrupted and
-did not clean up the `$ROOT_DIR/$KERNEL_DIR/$DEFCONFIG` file.
+This is likely because a previous build from one of the following does not clean
+up the `$ROOT_DIR/$KERNEL_DIR/$DEFCONFIG` file:
 
-This may cause `POST_DEFCONFIG_CMDS` to not be executed. Or
+- A `build.sh` build is interrupted
+- A `--config=local` Bazel build is interrupted
+
+These may cause `POST_DEFCONFIG_CMDS` to not being executed. Or
 `POST_DEFCONFIG_CMDS` is not defined to clean up `$DEFCONFIG`.
 
 To restore the workspace to a build-able state, manually delete the generated
@@ -346,25 +349,6 @@ issue:
 - You may run `tools/bazel clean` and try the build again. You may or may not
   see the error again afterwards.
 - You may rebuild with `--debug_cache_dir_conflict=resolve`.
-
-## Build hangs on BTRFS
-
-If your tree is on BTRFS, and your Android kernel source tree contains the
-following patch, building `kernel_build` may hang.
-
-[FROMLIST: kheaders: dereferences the source tree](http://r.android.com/2626404)
-
-This is a known issue:
-
-[Bug 217681 - gen_kheaders.sh gets stuck in an infinite loop](https://bugzilla.kernel.org/show_bug.cgi?id=217681)
-
-You may update your host machine's kernel to a version that includes the following patch
-to fix the problem.
-
-[[PATCH] btrfs: fix infinite directory reads](https://lore.kernel.org/linux-btrfs/c9ceb0e15d92d0634600603b38965d9b6d986b6d.1691923900.git.fdmanana@suse.com/)
-
-You may also use `--workaround_btrfs_b292212788` to work around this issue
-temporarily.
 
 ## fatal: not a git repository: '[...]/.git' {#not-git}
 

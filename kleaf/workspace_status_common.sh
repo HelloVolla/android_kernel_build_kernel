@@ -14,12 +14,14 @@
 # limitations under the License.
 
 # Script used as --workspace_status_command for common variables.
+# Must execute at the root of workspace.
 # https://docs.bazel.build/versions/main/command-line-reference.html#flag--workspace_status_command
+
+if [[ ! -f "WORKSPACE" ]]; then
+  echo "ERROR: workspace_status.sh must be executed at the root of Bazel workspace." >&2
+  exit 1
+fi
 
 if [[ -n "$KLEAF_MAKE_JOBS" ]]; then
   echo "MAKE_JOBS $KLEAF_MAKE_JOBS"
-fi
-
-if [[ "$KLEAF_MAKE_KEEP_GOING" == "true" ]]; then
-  echo "MAKE_KEEP_GOING true"
 fi

@@ -42,19 +42,11 @@ GKI_ARTIFACTS_AARCH64_OUTS = [
     for e in DEFAULT_IMAGES
 ]
 
-SYSTEM_DLKM_COMMON_OUTS = [
+SYSTEM_DLKM_OUTS = [
+    "system_dlkm.img",
     "system_dlkm_staging_archive.tar.gz",
     "system_dlkm.modules.load",
     "system_dlkm.modules.blocklist",
 ]
 
 MODULES_STAGING_ARCHIVE = "modules_staging_dir.tar.gz"
-
-MODULE_ENV_ARCHIVE_SUFFIX = "_module_env.tar.gz"
-
-UNSTRIPPED_MODULES_ARCHIVE = "unstripped_modules.tar.gz"
-
-# Archive emitted by kernel_build that contains the kernel_filegroup
-# definition and extra files.
-FILEGROUP_DEF_BUILD_FRAGMENT_NAME = "filegroup_decl_build_frag.txt"
-FILEGROUP_DEF_ARCHIVE_SUFFIX = "_filegroup_decl.tar.gz"

@@ -14,14 +14,14 @@
 
 """Extracts protected exports from protected kernel modules."""
 
-load(":abi/abi_transitions.bzl", "abi_common_attrs", "notrim_transition")
+load(":abi/abi_transitions.bzl", "notrim_transition")
 load(
     ":common_providers.bzl",
     "KernelBuildAbiInfo",
-    "KernelSerializedEnvInfo",
+    "KernelEnvAndOutputsInfo",
 )
 load(":debug.bzl", "debug")
-load(":utils.bzl", "kernel_utils", "utils")
+load(":utils.bzl", "utils")
 
 visibility("//build/kernel/kleaf/...")
 
@@ -41,9 +41,9 @@ def _protected_exports_impl(ctx):
     inputs = [
         ctx.file.protected_modules_list_file,
     ]
-    transitive_inputs = [ctx.attr.kernel_build[KernelSerializedEnvInfo].inputs]
+    transitive_inputs = [ctx.attr.kernel_build[KernelEnvAndOutputsInfo].inputs]
     tools = [ctx.executable._extract_protected_exports]
-    transitive_tools = [ctx.attr.kernel_build[KernelSerializedEnvInfo].tools]
+    transitive_tools = [ctx.attr.kernel_build[KernelEnvAndOutputsInfo].tools]
 
     flags = ["--protected-exports-list", out.path]
     flags += ["--gki-protected-modules-list", ctx.file.protected_modules_list_file.path]
@@ -54,11 +54,10 @@ def _protected_exports_impl(ctx):
         base_modules_archive = ctx.attr.kernel_build[KernelBuildAbiInfo].modules_staging_archive
     inputs.append(base_modules_archive)
 
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = ctx.attr.kernel_build[KernelSerializedEnvInfo],
+    command = ctx.attr.kernel_build[KernelEnvAndOutputsInfo].get_setup_script(
+        data = ctx.attr.kernel_build[KernelEnvAndOutputsInfo].data,
         restore_out_dir_cmd = utils.get_check_sandbox_cmd(),
     )
-
     command += """
         mkdir -p {intermediates_dir}
         mkdir -p {intermediates_dir}/temp
@@ -95,7 +94,7 @@ protected_exports = rule(
         # - extract_protected_exports depends on the clang toolchain, which requires us to
         #   know the toolchain_version ahead of time.
         # - We also don't have the necessity to extract symbols from prebuilts.
-        "kernel_build": attr.label(providers = [KernelSerializedEnvInfo, KernelBuildAbiInfo]),
+        "kernel_build": attr.label(providers = [KernelEnvAndOutputsInfo, KernelBuildAbiInfo]),
         "protected_modules_list_file": attr.label(doc = "List of protected modules whose exports needs to be extracted.", allow_single_file = True),
         "_extract_protected_exports": attr.label(
             default = "//build/kernel:extract_protected_exports",
@@ -106,6 +105,6 @@ protected_exports = rule(
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
-    } | abi_common_attrs(),
+    },
     cfg = notrim_transition,
 )

@@ -16,7 +16,6 @@
 
 load(
     ":common_providers.bzl",
-    "CompileCommandsInfo",
     "KernelCmdsInfo",
     "KernelModuleInfo",
     "KernelModuleSetupInfo",
@@ -66,10 +65,6 @@ def _kernel_module_group_impl(ctx):
         ]),
         packages = depset(transitive = [target[KernelModuleInfo].packages for target in targets]),
         label = ctx.label,
-        modules_order = depset(
-            transitive = [target[KernelModuleInfo].modules_order for target in targets],
-            order = "postorder",
-        ),
     )
 
     unstripped_modules_info = KernelUnstrippedModulesInfo(
@@ -95,13 +90,6 @@ def _kernel_module_group_impl(ctx):
         directories = depset(transitive = cmds_info_directories),
     )
 
-    compile_commands_info = CompileCommandsInfo(
-        infos = depset(transitive = [
-            target[CompileCommandsInfo].infos
-            for target in targets
-        ]),
-    )
-
     # Sync list of infos with kernel_module / ddk_module.
     return [
         default_info,
@@ -111,7 +99,6 @@ def _kernel_module_group_impl(ctx):
         module_symvers_info,
         ddk_headers_info,
         cmds_info,
-        compile_commands_info,
     ]
 
 kernel_module_group = rule(
@@ -139,7 +126,7 @@ ddk_module(
 )
 
 # my_subsystem is the public target that the device should depend on.
-kernel_module_group(
+ddk_module_group(
     name = "my_subsystem",
     srcs = [":a", ":b"],
     visibility = ["//package/my_device:__subpackages__"],

@@ -4,9 +4,33 @@
 
 To run `make *config` or `config.sh` in Kleaf, follow the following steps.
 
+### Step 0: Try the old `config.sh` command to guess the Kleaf equivalent
+
+If you already know what `kernel_build` you need to run on, go to step 1.
+
+Run the old `config.sh` command with appropriate environment variables
+and arguments. The `config.sh` guesses an equivalent command for you.
+You may execute this command directly in the future.
+
+Example:
+
+```shell
+$ BUILD_CONFIG=common/build.config.gki.aarch64 build/kernel/config.sh
+Inferring equivalent Bazel command...
+*****************************************************************************
+* WARNING: build.sh is deprecated for this branch. Please migrate to Bazel.
+*   See build/kernel/kleaf/README.md
+*          Possibly equivalent Bazel command:
+*
+*   $ tools/bazel run //common:kernel_aarch64_config --
+*
+* To suppress this warning, set KLEAF_SUPPRESS_BUILD_SH_DEPRECATION_WARNING=1
+*****************************************************************************
+```
+
 ### Step 1: Run the following Kleaf command
 
-Run
+The command you may run to replace `config.sh` is:
 
 ```shell
 $ tools/bazel run <name_of_kernel_build>_config [-- [menuconfig|nconfig|savedefconfig...]]
@@ -23,8 +47,10 @@ If nothing is provided, the default is `menuconfig`.
 Example:
 
 ```shell
+# BUILD_CONFIG=common/build.config.gki.aarch64 build/kernel/config.sh
 $ tools/bazel run //common:kernel_aarch64_config
 
+# BUILD_CONFIG=common/build.config.gki.x86_64 build/kernel/config.sh nconfig
 $ tools/bazel run //common:kernel_x86_64_config -- nconfig
 ```
 
@@ -88,20 +114,18 @@ Example:
 ```python
 # path/to/tuna/BUILD.bazel
 exports_files([
-    "kasan_hw_tags_defconfig",
+    "gcov_defconfig",
 ])
 kernel_build(name = "tuna", ...)
 ```
 ```shell
-# kasan_hw_tags_defconfig
-CONFIG_KASAN=y
-CONFIG_KASAN_HW_TAGS=y
-# CONFIG_KASAN_SW_TAGS is not set
-# etc. Add your configs!
+# gcov_defconfig
+CONFIG_GCOV_KERNEL=y
+CONFIG_GCOV_PROFILE_ALL=y
 ```
 ```shell
 $ tools/bazel build \
-    --defconfig_fragment=//path/to/tuna:kasan_hw_tags_defconfig \
+    --defconfig_fragment=//path/to/tuna:gcov_defconfig \
     //path/to/tuna:tuna
 ```
 
@@ -133,14 +157,7 @@ built. It is recommended to use these common flags instead of defining your
 own defconfig fragments to avoid fragmentation in the ecosystem (pun intended).
 
 *   `--btf_debug_info`
-*   `--debug`
-*   `--gcov`
-*   `--kasan`
-*   `--kasan_sw_tags`
-*   `--kasan_generic`
-*   `--kcsan`
 *   `--page_size`
-*   `--rust` / `--norust`
 
 ### User-defined flags
 
@@ -191,8 +208,8 @@ To shorten `--defconfig_fragment` flags, you may use
 
 ```text
 # device.bazelrc
-build:kasan_hw_tags --defconfig_fragment=//path/to/tuna:kasan_hw_tags_defconfig
+build:gcov --defconfig_fragment=//path/to/tuna:gcov_defconfig
 ```
 ```shell
-$ tools/bazel build --config=kasan_hw_tags //path/to/tuna:tuna
+$ tools/bazel build --config=gcov //path/to/tuna:tuna
 ```

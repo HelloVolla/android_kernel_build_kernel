@@ -16,35 +16,24 @@
 Defines repositories in a Kleaf workspace.
 """
 
-load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
-load("//build/kernel/kleaf:key_value_repo.bzl", "key_value_repo")
-load("//build/kernel/kleaf/impl:declare_host_tools.bzl", "kleaf_host_tools_repo")
+load("//build/bazel_common_rules/workspace:external.bzl", "import_external_repositories")
 load(
-    "//build/kernel/kleaf/impl:kernel_prebuilt_repo.bzl",
-    "kernel_prebuilt_repo",
-)
-load(
-    "//build/kernel/kleaf/impl:kernel_prebuilt_utils.bzl",
+    "//build/kernel/kleaf:constants.bzl",
     "CI_TARGET_MAPPING",
+    "GKI_DOWNLOAD_CONFIGS",
 )
-load(
-    "//build/kernel/kleaf/impl:local_repository.bzl",
-    "kleaf_local_repository",
-    "new_kleaf_local_repository",
-)
-load("//prebuilts/clang/host/linux-x86/kleaf:clang_toolchain_repository.bzl", "clang_toolchain_repository")
+load("//build/kernel/kleaf:download_repo.bzl", "download_artifacts_repo")
+load("//build/kernel/kleaf:key_value_repo.bzl", "key_value_repo")
+load("//prebuilts/clang/host/linux-x86/kleaf:register.bzl", "register_clang_toolchains")
 
 # buildifier: disable=unnamed-macro
-def define_kleaf_workspace(
-        common_kernel_package = None,
-        include_remote_java_tools_repo = False,
-        artifact_url_fmt = None):
+def define_kleaf_workspace(common_kernel_package = None, include_remote_java_tools_repo = False):
     """Common macro for defining repositories in a Kleaf workspace.
 
     **This macro must only be called from `WORKSPACE` or `WORKSPACE.bazel`
     files, not `BUILD` or `BUILD.bazel` files!**
 
-    If [`define_kleaf_workspace_epilog`](workspace_epilog.md#define_kleaf_workspace_epilog) is
+    If [`define_kleaf_workspace_epilog`](#define_kleaf_workspace_epilog) is
     called, it must be called after `define_kleaf_workspace` is called.
 
     Args:
@@ -59,27 +48,11 @@ def define_kleaf_workspace(
         repositories: remote_java_tools and remote_java_tools_linux.
 
         These respositories should exist under `//prebuilts/bazel/`
-      artifact_url_fmt: API endpoint for Android CI artifacts.
-        The format may include anchors for the following properties:
-          * {build_number}
-          * {target}
-          * {filename}
-
-    Deprecated:
-      The use of legacy WORKSPACE is deprecated. Please migrate to Bazel modules.
-      See [bzlmod.md](../bzlmod.md).
     """
-
-    # buildifier: disable=print
-    print("""
-WARNING: The use of legacy WORKSPACE is deprecated. Please migrate to Bazel modules.
-  For details, see build/kernel/kleaf/docs/bzlmod.md.
-""")
-
     if common_kernel_package == None:
-        common_kernel_package = str(Label("//common:x")).removesuffix(":x")
+        common_kernel_package = "@//common"
     if not common_kernel_package.startswith("@") and not common_kernel_package.startswith("//"):
-        common_kernel_package = str(Label("//{}:x".format(common_kernel_package))).removesuffix(":x")
+        common_kernel_package = "@//" + common_kernel_package
 
         # buildifier: disable=print
         print("""
@@ -88,83 +61,19 @@ WARNING: define_kleaf_workspace() should be called with common_kernel_package={}
             repr(common_kernel_package),
         ))
 
-    maybe(
-        repo_rule = kleaf_local_repository,
-        name = "bazel_skylib",
-        path = "external/bazel-skylib",
+    import_external_repositories(
+        # keep sorted
+        bazel_skylib = True,
+        io_abseil_py = True,
+        io_bazel_stardoc = True,
     )
 
-    maybe(
-        repo_rule = kleaf_local_repository,
-        name = "io_abseil_py",
-        path = "external/python/absl-py",
-    )
-
-    maybe(
-        repo_rule = kleaf_local_repository,
-        name = "rules_license",
-        path = "external/bazelbuild-rules_license",
-    )
-
-    maybe(
-        repo_rule = kleaf_local_repository,
-        name = "rules_pkg",
-        path = "external/bazelbuild-rules_pkg",
-    )
-
-    maybe(
-        repo_rule = kleaf_local_repository,
-        name = "rules_rust",
-        path = "external/bazelbuild-rules_rust",
-    )
-
-    # Superset of all tools we need from host.
-    # For the subset of host tools we typically use for a kernel build,
-    # see //build/kernel:hermetic-tools.
-    kleaf_host_tools_repo(
-        name = "kleaf_host_tools",
-        host_tools = [
-            "bash",
-            "perl",
-            "rsync",
-            "sh",
-            # For BTRFS (b/292212788)
-            "find",
-        ],
-    )
-
-    # External repos without Bazel support.
+    # The prebuilt NDK does not support Bazel.
     # https://docs.bazel.build/versions/main/external.html#non-bazel-projects
-    new_kleaf_local_repository(
+    native.new_local_repository(
         name = "prebuilt_ndk",
-        path = "prebuilts/ndk-r26",
+        path = "prebuilts/ndk-r23",
         build_file = "build/kernel/kleaf/ndk.BUILD",
-    )
-
-    kleaf_workspace_name = Label("//build/kernel/kleaf").workspace_name
-    new_kleaf_local_repository(
-        name = "libcap",
-        path = "external/libcap",
-        build_file = "build/kernel/kleaf/libcap.BUILD",
-        repo_mapping = {"@kleaf": "@" + kleaf_workspace_name},
-    )
-
-    new_kleaf_local_repository(
-        name = "libcap_ng",
-        path = "external/libcap-ng",
-        build_file = "build/kernel/kleaf/libcap_ng.BUILD",
-    )
-
-    new_kleaf_local_repository(
-        name = "zopfli",
-        path = "external/zopfli",
-        build_file = "build/kernel/kleaf/zopfli.BUILD",
-    )
-
-    new_kleaf_local_repository(
-        name = "pigz",
-        path = "external/pigz",
-        build_file = "build/kernel/kleaf/pigz.BUILD",
     )
 
     key_value_repo(
@@ -175,30 +84,43 @@ WARNING: define_kleaf_workspace() should be called with common_kernel_package={}
         },
     )
 
-    for repo_name in CI_TARGET_MAPPING:
-        kernel_prebuilt_repo(
-            name = repo_name,
-            apparent_name = repo_name,
-            artifact_url_fmt = artifact_url_fmt,
-            auto_download_config = True,
-            target = CI_TARGET_MAPPING[repo_name]["target"],
-        )
+    # TODO: Make this architecture agnostic.
+    gki_prebuilts_files = {out: None for out in CI_TARGET_MAPPING["kernel_aarch64"]["outs"]}
+    gki_prebuilts_optional_files = {CI_TARGET_MAPPING["kernel_aarch64"]["protected_modules"]: None}
+    for config in GKI_DOWNLOAD_CONFIGS:
+        if config.get("mandatory", True):
+            files_dict = gki_prebuilts_files
+        else:
+            files_dict = gki_prebuilts_optional_files
 
-    maybe(
-        repo_rule = kleaf_local_repository,
+        files_dict.update({out: None for out in config.get("outs", [])})
+
+        for out, remote_filename_fmt in config.get("outs_mapping", {}).items():
+            file_metadata = {"remote_filename_fmt": remote_filename_fmt}
+            files_dict.update({out: file_metadata})
+
+    download_artifacts_repo(
+        name = "gki_prebuilts",
+        files = gki_prebuilts_files,
+        optional_files = gki_prebuilts_optional_files,
+        target = "kernel_aarch64",
+    )
+
+    # TODO(b/200202912): Re-route this when rules_python is pulled into AOSP.
+    native.local_repository(
         name = "rules_python",
-        path = "external/bazelbuild-rules_python",
+        path = "build/bazel_common_rules/rules/python/stubs",
     )
 
     # The following 2 repositories contain prebuilts that are necessary to the Java Rules.
     # They are vendored locally to avoid the need for CI bots to download them.
     if include_remote_java_tools_repo:
-        kleaf_local_repository(
+        native.local_repository(
             name = "remote_java_tools",
             path = "prebuilts/bazel/common/remote_java_tools",
         )
 
-        kleaf_local_repository(
+        native.local_repository(
             name = "remote_java_tools_linux",
             path = "prebuilts/bazel/linux-x86_64/remote_java_tools_linux",
         )
@@ -208,23 +130,28 @@ WARNING: define_kleaf_workspace() should be called with common_kernel_package={}
     # Note: This was not added directly to avoid conflicts with roboleaf,
     #   see https://android-review.googlesource.com/c/platform/build/bazel/+/2457390
     #   for more details.
-    new_kleaf_local_repository(
+    native.new_local_repository(
         name = "local_jdk",
         path = "prebuilts/jdk/jdk11/linux-x86",
         build_file = "build/kernel/kleaf/jdk11.BUILD",
     )
 
-    # Need rules_cc for any py_binary targets (especially copy_to_dist_dir).
-    maybe(
-        repo_rule = kleaf_local_repository,
+    # Fake rules_cc to avoid fetching it for any py_binary targets.
+    native.local_repository(
         name = "rules_cc",
-        path = "external/bazelbuild-rules_cc",
+        path = "build/kernel/kleaf/impl/fake_rules_cc",
     )
 
     # Stub out @remote_coverage_tools required for testing.
-    kleaf_local_repository(
+    native.local_repository(
         name = "remote_coverage_tools",
         path = "build/bazel_common_rules/rules/coverage/remote_coverage_tools",
+    )
+
+    # Stub out @rules_java required for stardoc.
+    native.local_repository(
+        name = "rules_java",
+        path = "build/bazel_common_rules/rules/java/rules_java",
     )
 
     # Use checked-in JDK from prebuilts as local_jdk
@@ -233,15 +160,9 @@ WARNING: define_kleaf_workspace() should be called with common_kernel_package={}
         "@local_jdk//:all",
     )
 
-    # Label(): Resolve the label against this extension (register.bzl) so the
-    # workspace name is injected properly when //prebuilts is in a subworkspace.
-    # str(): register_toolchains() only accepts strings, not Labels.
     native.register_toolchains(
-        str(Label("//prebuilts/build-tools:py_toolchain")),
-        str(Label("//build/kernel:hermetic_tools_toolchain")),
+        "//prebuilts/build-tools:py_toolchain",
+        "//build/kernel:hermetic_tools_toolchain",
     )
 
-    clang_toolchain_repository(
-        name = "kleaf_clang_toolchain",
-    )
-    native.register_toolchains("@kleaf_clang_toolchain//:all")
+    register_clang_toolchains()

@@ -13,6 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-KLEAF_REPO_DIR=$($(dirname $(dirname $(readlink -f "$0")))/gettop.sh)
+ROOT_DIR=$($(dirname $(dirname $(readlink -f "$0")))/gettop.sh)
 
-exec "$KLEAF_REPO_DIR"/prebuilts/build-tools/path/linux-x86/python3 $(dirname $(readlink -f "$0"))/bazel.py "$KLEAF_REPO_DIR" "$@"
+exec "$ROOT_DIR"/prebuilts/build-tools/path/linux-x86/python3 $(dirname $(readlink -f "$0"))/bazel.py "$ROOT_DIR" "$@"

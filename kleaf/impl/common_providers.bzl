@@ -86,54 +86,40 @@ KernelEnvToolchainsInfo = provider(
     },
 )
 
-KernelSerializedEnvInfo = provider(
+KernelEnvAndOutputsInfo = provider(
     doc = """Like `KernelEnvInfo` but also restores artifacts.
-
-It is expected to be created like the following:
-
-```
-setup_script = ctx.actions.declare_file("{}/setup.sh".format(ctx.attr.name))
-ctx.actions.write(
-    output = setup_script,
-    content = \"""
-        {pre_setup}
-        {eval_restore_out_dir_cmd}
-    \""".format(
-        pre_setup = pre_setup, # sets up hermetic toolchain and environment variables
-        eval_restore_out_dir_cmd = kernel_utils.eval_restore_out_dir_cmd(),
-    )
-)
-
-serialized_env_info = KernelSerializedEnvInfo(
-    setup_script = setup_script,
-    tools = ...,
-    inputs = depset([setup_script], ...),
-)
-```
 
 It is expected to use these infos in the following way:
 
 ```
-command = \"""
-    KLEAF_RESTORE_OUT_DIR_CMD="{restore_out_dir_cmd}"
-    . {setup_script}
-\""".format(
+command = ctx.attr.dep[KernelEnvAndOutputsInfo].get_setup_script(
+    data = ctx.attr.dep[KernelEnvAndOutputsInfo].data,
     restore_out_dir_cmd = cache_dir_step.cmd, # or utils.get_check_sandbox_cmd(),
-    setup_script = ctx.attr.dep[KernelSerializedEnvInfo].setup_script.path,
 )
 ```
-""",
+    """,
     fields = {
-        "setup_script": "A file containing the setup script.",
-        "inputs": """A [depset](https://bazel.build/extending/depsets) containing inputs used
-                   by `setup_script`. Note that dependencies of `restore_out_dir_cmd` is not
-                   included. `inputs` are compiled against the target platform.
+        "get_setup_script": """A function.
 
-                   For convenience for the caller / user of the info, `inputs` should include
-                   `setup_script`.
-                   """,
+The function should have the following signature:
+
+```
+def get_setup_script(data, restore_out_dir_cmd):
+```
+
+where:
+
+* `data`: the `data` field of this info.
+* `restore_out_dir_cmd`: A string that contains command to adjust the value of `OUT_DIR`.
+
+The function should return a string that contains the setup script.
+""",
+        "data": "Additional data consumed by `get_setup_script`.",
+        "inputs": """A [depset](https://bazel.build/extending/depsets) containing inputs used
+                   by `get_setup_script`. Note that dependencies of `restore_out_dir_cmd` is not
+                   included. `inputs` are compiled against the target platform.""",
         "tools": """A [depset](https://bazel.build/extending/depsets) containing tools used
-                   by `setup_script`. Note that dependencies of `restore_out_dir_cmd` is not
+                   by `get_setup_script`. Note that dependencies of `restore_out_dir_cmd` is not
                    included. `tools` are compiled against the execution platform.""",
     },
 )
@@ -164,22 +150,9 @@ KernelBuildInfo = provider(
             [Default outputs](https://docs.bazel.build/versions/main/skylark/rules.html#default-outputs)
             of the rule specified by `base_kernel`""",
         "interceptor_output": "`interceptor` log. See [`interceptor`](https://android.googlesource.com/kernel/tools/interceptor/) project.",
-        "kernel_release": "The file `kernel.release`.",
-    },
-)
-
-CompileCommandsSingleInfo = provider(
-    doc = """Provides info necessary to build compile_commands.json for a single target.""",
-    fields = {
         "compile_commands_with_vars": "A file that can be transformed into `compile_commands.json`.",
-        "compile_commands_common_out_dir": "A subset of `$COMMON_OUT_DIR` for `compile_commands.json`.",
-    },
-)
-
-CompileCommandsInfo = provider(
-    doc = """Provides info necessary to build compile_commands.json for multiple targets.""",
-    fields = {
-        "infos": """A [depset](https://bazel.build/extending/depsets) of CompileCommandsSingleInfo""",
+        "compile_commands_out_dir": "A subset of `$OUT_DIR` for `compile_commands.json`.",
+        "kernel_release": "The file `kernel.release`.",
     },
 )
 
@@ -189,12 +162,13 @@ KernelBuildExtModuleInfo = provider(
         "modules_staging_archive": "Archive containing staging kernel modules. " +
                                    "Does not contain the lib/modules/* suffix.",
         "module_hdrs": "A [depset](https://bazel.build/extending/depsets) containing headers for this `kernel_build` for building external modules",
-        "ddk_config_env": "`KernelSerializedEnvInfo` for configuring DDK modules (excl. legacy `kernel_module`).",
-        "ddk_module_defconfig_fragments": "A [depset](https://bazel.build/extending/depsets) containing additional defconfig fragments for DDK modules.",
-        "mod_min_env": "`KernelSerializedEnvInfo` for building external modules, including minimal needed `kernel_build` outputs.",
-        "mod_full_env": "`KernelSerializedEnvInfo` for building external modules, including all `kernel_build` outputs.",
-        "modinst_env": "`KernelSerializedEnvInfo` for running `modules_install`.",
-        "collect_unstripped_modules": "Whether an external [`kernel_module`](kernel.md#kernel_module) building against this [`kernel_build`](kernel.md#kernel_build) should provide unstripped ones for debugging.",
+        "module_scripts": "A [depset](https://bazel.build/extending/depsets) containing scripts for this `kernel_build` for building external modules",
+        "module_kconfig": "A [depset](https://bazel.build/extending/depsets) containing `Kconfig` for this `kernel_build` for configuring external modules",
+        "config_env_and_outputs_info": "`KernelEnvAndOutputsInfo` for configuring external modules.",
+        "modules_env_and_minimal_outputs_info": "`KernelEnvAndOutputsInfo` for building external modules, including minimal needed `kernel_build` outputs.",
+        "modules_env_and_all_outputs_info": "`KernelEnvAndOutputsInfo` for building external modules, including all `kernel_build` outputs.",
+        "modules_install_env_and_outputs_info": "`KernelEnvAndOutputsInfo` for running modules_install.",
+        "collect_unstripped_modules": "Whether an external [`kernel_module`](#kernel_module) building against this [`kernel_build`](#kernel_build) should provide unstripped ones for debugging.",
         "strip_modules": "Whether debug information for distributed modules is stripped",
     },
 )
@@ -212,11 +186,11 @@ KernelBuildUapiInfo = provider(
 )
 
 KernelBuildAbiInfo = provider(
-    doc = "A provider that specifies ABI-related information of a [`kernel_build`](kernel.md#kernel_build).",
+    doc = "A provider that specifies ABI-related information of a [`kernel_build`](#kernel_build).",
     fields = {
-        "trim_nonlisted_kmi": "Value of `trim_nonlisted_kmi` in [`kernel_build()`](kernel.md#kernel_build).",
+        "trim_nonlisted_kmi": "Value of `trim_nonlisted_kmi` in [`kernel_build()`](#kernel_build).",
         "combined_abi_symbollist": "The **combined** `abi_symbollist` file from the `_kmi_symbol_list` rule, consist of the source `kmi_symbol_list` and `additional_kmi_symbol_lists`.",
-        "module_outs_file": "A file containing `[kernel_build.module_outs]`(kernel.md#kernel_build-module_outs) and `[kernel_build.module_implicit_outs]`(kernel.md#kernel_build-module_implicit_outs).",
+        "module_outs_file": "A file containing `[kernel_build.module_outs]`(#kernel_build-module_outs) and `[kernel_build.module_implicit_outs]`(#kernel_build-module_implicit_outs).",
         "modules_staging_archive": "Archive containing staging kernel modules. ",
         "base_modules_staging_archive": "Archive containing staging kernel modules of the base kernel",
         "src_kmi_symbol_list": """Source file for `kmi_symbol_list` that points to the symbol list
@@ -228,16 +202,16 @@ KernelBuildAbiInfo = provider(
 )
 
 KernelBuildInTreeModulesInfo = provider(
-    doc = """A provider that specifies the expectations of a [`kernel_build`](kernel.md#kernel_build) on its
-[`base_kernel`](kernel.md#kernel_build-base_kernel) for the list of in-tree modules in the `base_kernel`.""",
+    doc = """A provider that specifies the expectations of a [`kernel_build`](#kernel_build) on its
+[`base_kernel`](#kernel_build-base_kernel) for the list of in-tree modules in the `base_kernel`.""",
     fields = {
-        "module_outs_file": "A file containing `[kernel_build.module_outs]`(kernel.md#kernel_build-module_outs) and `[kernel_build.module_implicit_outs]`(kernel.md#kernel_build-module_implicit_outs).",
+        "module_outs_file": "A file containing `[kernel_build.module_outs]`(#kernel_build-module_outs) and `[kernel_build.module_implicit_outs]`(#kernel_build-module_implicit_outs).",
     },
 )
 
 KernelBuildMixedTreeInfo = provider(
-    doc = """A provider that specifies the expectations of a [`kernel_build`](kernel.md#kernel_build) on its
-[`base_kernel`](kernel.md#kernel_build-base_kernel) for constructing `KBUILD_MIXED_TREE`.""",
+    doc = """A provider that specifies the expectations of a [`kernel_build`](#kernel_build) on its
+[`base_kernel`](#kernel_build-base_kernel) for constructing `KBUILD_MIXED_TREE`.""",
     fields = {
         "files": """A [depset](https://bazel.build/extending/depsets) containing the list of
 files required to build `KBUILD_MIXED_TREE` for the device kernel.""",
@@ -248,52 +222,6 @@ KernelBuildUnameInfo = provider(
     doc = """A provider providing `kernel.release` of a `kernel_build`.""",
     fields = {
         "kernel_release": "The file `kernel.release`.",
-    },
-)
-
-KernelBuildFilegroupDeclInfo = provider(
-    doc = """A provider providing information of a `kernel_build` to generate `kernel_filegroup`
-        declaration.""",
-    fields = {
-        "filegroup_srcs": """[depset](https://bazel.build/extending/depsets) of
-            [`File`](https://bazel.build/rules/lib/File)s that the
-            `kernel_filegroup` should return as default outputs.""",
-        # TODO(b/291918087): This may be embedded in the generated BUILD file directly
-        "module_outs_file": """A file containing
-            `[kernel_build.module_outs]`(kernel.md#kernel_build-module_outs) and
-            `[kernel_build.module_implicit_outs]`(kernel.md#kernel_build-module_implicit_outs).""",
-        "modules_staging_archive": "Archive containing staging kernel modules. ",
-        # TODO(b/291918087): This may be embedded in the generated BUILD file directly
-        "toolchain_version_file": "A file containing the toolchain version",
-        "kernel_release": "The file `kernel.release`.",
-        "modules_prepare_archive": """Archive containing the file built by
-            [`modules_prepare`](#modules_prepare)""",
-        "collect_unstripped_modules": "[`kernel_build.collect_unstripped_modules`](#kernel_build-collect_unstripped_modules)",
-        "strip_modules": "[`kernel_build.strip_modules`](#kernel_build-strip_modules)",
-        "src_protected_modules_list": """Source file with list of protected modules whose exports
-            are being protected and needs to be updated by `--update_protected_exports`.
-
-            May be `None`.""",
-        "ddk_module_defconfig_fragments": """[depset](https://bazel.build/extending/depsets) of
-            [`File`](https://bazel.build/rules/lib/File)s containing
-            [`kernel_build.ddk_module_defconfig_fragments`](#kernel_build-ddk_module_defconfig_fragments).""",
-        "kernel_uapi_headers": """[depset](https://bazel.build/extending/depsets) of
-            [`File`](https://bazel.build/rules/lib/File)s containing
-            archives of UAPI headers.""",
-        "arch": "[`kernel_build.arch`](#kernel_build-arch)",
-        "env_setup_script": """A [depset](https://bazel.build/extending/depsets) of
-            [`File`](https://bazel.build/rules/lib/File)s to replay the `kernel_config` environment.
-
-            See [`KernelConfigInfo`](#KernelConfigInfo).""",
-        "config_out_dir": """The output directory of `kernel_config`.""",
-        "outs": """[depset](https://bazel.build/extending/depsets) of `kernel_build`'s
-            `outs`.""",
-        "internal_outs": """[depset](https://bazel.build/extending/depsets) of `kernel_build`'s
-            `internal_outs`.""",
-        "ruledir": """`ruledir` from `kernel_build` that signifies the root for
-            `outs`, `implcit_outs`, `internal_outs`.""",
-        "module_env_archive": "Archive preparing an environment to build modules. May be `None`.",
-        "has_base_kernel": "Whether the original `kernel_build()` has a not-None `base_kernel`.",
     },
 )
 
@@ -317,12 +245,12 @@ each item points to a directory containing unstripped modules.
 Order matters; earlier elements in the traverse order has higher priority. Hence,
 this depset must have `order` argument specified.
 
-For [`kernel_build()`](kernel.md#kernel_build), this is a directory containing unstripped in-tree modules.
+For [`kernel_build()`](#kernel_build), this is a directory containing unstripped in-tree modules.
 - This is `None` if and only if `collect_unstripped_modules = False`
 - Never `None` if and only if `collect_unstripped_modules = True`
 - An empty directory if and only if `collect_unstripped_modules = True` and `module_outs` is empty
 
-For an external [`kernel_module()`](kernel.md#kernel_module), this is a directory containing unstripped external modules.
+For an external [`kernel_module()`](#kernel_module), this is a directory containing unstripped external modules.
 - This is `None` if and only if the `kernel_build` argument has `collect_unstripped_modules = False`
 - Never `None` if and only if the `kernel_build` argument has `collect_unstripped_modules = True`
 """,
@@ -334,8 +262,9 @@ KernelModuleKernelBuildInfo = provider(
     fields = {
         "label": "Label of the `kernel_build` target",
         "ext_module_info": "`KernelBuildExtModuleInfo`",
-        "serialized_env_info": "`KernelSerializedEnvInfo`",
+        "env_and_outputs_info": "`KernelEnvAndOutputsInfo`",
         "images_info": "`KernelImagesInfo`",
+        "kernel_build_info": "`KernelBuildInfo`",
     },
 )
 
@@ -354,15 +283,12 @@ KernelModuleInfo = provider(
         "files": "A [depset](https://bazel.build/extending/depsets) of output `*.ko` files.",
         "packages": """For `kernel_module` / `ddk_module`s, a
             [depset](https://bazel.build/extending/depsets) containing package name of
-            the target.
+            the target. This corresponds to `EXT_MOD` in `build.sh`.
 
             For other rules that contains multiple `kernel_module`s, a [depset] containing package
-            names of all external modules in an unspecified order.""",
+            names of all external modules in an unspecified order. This corresponds to `EXT_MODULES`
+            in `build.sh`.""",
         "label": "Label to the `kernel_module` target.",
-        "modules_order": """A [depset](https://bazel.build/extending/depsets) of `modules.order`
-            files from ddk_module's, kernel_module, etc.
-            It uses [`postorder`](https://bazel.build/rules/lib/builtins/depset) ordering (dependencies
-            first).""",
     },
 )
 
@@ -392,19 +318,16 @@ ModuleSymversInfo = provider(
     doc = "A provider that provides `Module.symvers` for `modpost`.",
     fields = {
         "restore_paths": """A [depset](https://bazel.build/extending/depsets) of
-            paths relative to `COMMON_OUT_DIR` where the `Module.symvers` files will be
+            paths relative to <the root of the output directory> (e.g.
+            `<sandbox_root>/out/<branch>`) where the `Module.symvers` files will be
             restored to by `KernelModuleSetupInfo`.""",
     },
 )
 
 KernelImagesInfo = provider(
-    doc = "A provider that represents the expectation of [`kernel_images`](kernel.md#kernel_images) to [`kernel_build`](kernel.md#kernel_build)",
+    doc = "A provider that represents the expectation of [`kernel_images`](#kernel_images) to [`kernel_build`](#kernel_build)",
     fields = {
         "base_kernel_label": "Label of the `base_kernel` target, if exists",
-        "outs": "A list of File object corresponding to the `outs` attribute (excluding `module_outs`, `implicit_outs` and `internal_outs`)",
-        "base_kernel_files": """A [depset](https://bazel.build/extending/depsets) containing
-            [Default outputs](https://docs.bazel.build/versions/main/skylark/rules.html#default-outputs)
-            of the rule specified by `base_kernel`""",
     },
 )
 
@@ -432,23 +355,5 @@ DdkConfigInfo = provider(
             of this and its dependencies. Uses `postorder` ordering (dependencies first).""",
         "defconfig": """A [depset](https://bazel.build/extending/depsets) containing the Kconfig
             file of this and its dependencies. Uses `postorder` ordering (dependencies first).""",
-    },
-)
-
-ImagesInfo = provider(
-    doc = "Provider from individual *_image rule to [`kernel_images`](kernel.md#kernel_images) rule",
-    fields = {
-        "files_dict": """A dictionary, where keys are keys in
-            [OutputGroupInfo](https://bazel.build/rules/lib/providers/OutputGroupInfo)
-            for `kernel_images`,
-            and values are [depsets](https://bazel.build/extending/depsets).
-        """,
-    },
-)
-
-KernelConfigInfo = provider(
-    doc = "For `kernel_config` to provide files to replay the environment",
-    fields = {
-        "env_setup_script": "script from `kernel_env`",
     },
 )

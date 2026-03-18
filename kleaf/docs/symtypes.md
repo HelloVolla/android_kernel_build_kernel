@@ -1,7 +1,7 @@
 # `KBUILD_SYMTYPES`
 
-Build symtypes files can be enabled with the `--kbuild_symtypes` flag.
-For example:
+The equivalent of setting `KBUILD_SYMTYPES=1` in `build/build.sh` is the
+`--kbuild_symtypes` flag. For example:
 
 ```shell
 $ bazel build --kbuild_symtypes //common:kernel_aarch64
@@ -19,6 +19,13 @@ macro. In the above example, the symtypes file can be found at
 ```
 bazel-bin/common/kernel_aarch64/symtypes/
 ```
+
+## ABI monitoring
+
+`kbuild_symtypes="true"` is automatically set for targets created for ABI
+monitoring, including the `with_vmlinux`
+and `notrim` targets. This corresponds to setting
+`KBUILD_SYMTYPES=1` in `build/build_abi.sh`.
 
 ## Confirming the value of `--kbuild_symtypes`
 

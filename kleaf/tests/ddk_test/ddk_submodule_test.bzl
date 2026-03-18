@@ -66,14 +66,12 @@ def ddk_submodule_test(name):
         name = name + "_submodule_self",
         out = name + "_submodule_self.ko",
         srcs = ["self.c", "self.h"],
-        tags = ["manual"],
     )
 
     ddk_submodule(
         name = name + "_submodule_dep",
         out = name + "_submodule_dep.ko",
         srcs = ["dep.c"],
-        tags = ["manual"],
     )
 
     # Test module with one submodule
@@ -110,7 +108,6 @@ def ddk_submodule_test(name):
         out = name + "_external_headers_submodule.ko",
         deps = [name + "_headers"],
         srcs = [],
-        tags = ["manual"],
     )
 
     _ddk_module_test_make(
@@ -128,7 +125,6 @@ def ddk_submodule_test(name):
         out = name + "_export_ddk_headers_submodule.ko",
         hdrs = [name + "_headers"],
         srcs = [],
-        tags = ["manual"],
     )
 
     _ddk_module_test_make(
@@ -148,7 +144,6 @@ def ddk_submodule_test(name):
         hdrs = ["include/subdir.h"],
         includes = ["include"],
         srcs = [],
-        tags = ["manual"],
     )
 
     _ddk_module_test_make(

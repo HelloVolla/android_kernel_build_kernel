@@ -1,7 +1,7 @@
-# Build configs
+# `build.sh` Build configs
 
 This document provides reference to the Bazel equivalent or alternative for
-the legacy build configs.
+build configs that `build.sh` and `build_abi.sh` supports.
 
 For build configs with a Bazel equivalent / alternative, a code snippet and a
 link to the [documentation for all rules] is provided. You may look up the
@@ -118,7 +118,8 @@ Not used in Bazel. Alternatives:
 
 You may disable LTO or use thin LTO; see [`LTO`](#LTO).
 
-You may use `--config=fast` to build faster.
+You may use `--config=fast` to build faster. Note
+that this is **NOT** equivalent to `FAST_BUILD=1 build/build.sh`.
 See [fast.md](fast.md) for details.
 
 You may build just the kernel binary and GKI modules, without headers and
@@ -163,10 +164,8 @@ See [documentation for all rules].
 ## EXT\_MODULES
 
 ```python
-ddk_module()
+kernel_module()
 ```
-
-NOTE: Prefer `ddk_module` over the legacy `kernel_module`.
 
 See [documentation for all rules].
 
@@ -429,8 +428,13 @@ See [documentation for all rules].
 kernel_images(build_vendor_boot=...)
 ```
 
-The flags are rather straightforward. `build_boot` controls the `boot` image.
-`build_vendor_boot` controls the `vendor_boot` image. Setting
+**Note**: In `build.sh`, `BUILD_BOOT_IMG` and `BUILD_VENDOR_BOOT_IMG` are
+confusingly the same flag. `vendor_boot` is only built if either
+`BUILD_BOOT_IMG` or `BUILD_VENDOR_BOOT_IMG` is set, and `SKIP_VENDOR_BOOT`
+is not set.
+
+In Bazel, the flags are rather straightforward. `build_boot` controls the
+`boot` image. `build_vendor_boot` controls the `vendor_boot` image. Setting
 `build_vendor_boot = True` requires `build_boot = True`.
 
 See [documentation for all rules].
@@ -456,11 +460,7 @@ inputs, then add the target to your `copy_to_dist_dir` macro.
 
 ## SKIP\_UNPACKING\_RAMDISK
 
-```python
-kernel_images(unpack_ramdisk=...)
-```
-
-See [documentation for all rules].
+Specify in the build config.
 
 ## AVB\_SIGN\_BOOT\_IMG
 
@@ -588,7 +588,7 @@ See [documentation for all rules].
 ## SYSTEM\_DLKM\_FS\_TYPE
 
 ```python
-kernel_images(system_dlkm_fs_types=["ext4", "erofs"])
+kernel_images(system_dlkm_fs_type=[ext4, erofs])
 ```
 
 See [documentation for all rules].

@@ -18,10 +18,6 @@ load(
     ":common_providers.bzl",
     "KernelUnstrippedModulesInfo",
 )
-load(
-    ":constants.bzl",
-    "UNSTRIPPED_MODULES_ARCHIVE",
-)
 load(":debug.bzl", "debug")
 load(":hermetic_toolchain.bzl", "hermetic_toolchain")
 
@@ -37,7 +33,7 @@ def _kernel_unstripped_modules_archive_impl(ctx):
     directories_depsets += [kernel_module[KernelUnstrippedModulesInfo].directories for kernel_module in ctx.attr.kernel_modules]
     srcs = depset(transitive = directories_depsets, order = "postorder").to_list()
 
-    out_file = ctx.actions.declare_file("{}/{}".format(ctx.attr.name, UNSTRIPPED_MODULES_ARCHIVE))
+    out_file = ctx.actions.declare_file("{}/unstripped_modules.tar.gz".format(ctx.attr.name))
     unstripped_dir = ctx.genfiles_dir.path + "/unstripped"
 
     command = hermetic_tools.setup
@@ -79,6 +75,8 @@ def _kernel_unstripped_modules_archive_impl(ctx):
 kernel_unstripped_modules_archive = rule(
     implementation = _kernel_unstripped_modules_archive_impl,
     doc = """Compress the unstripped modules into a tarball.
+
+This is the equivalent of `COMPRESS_UNSTRIPPED_MODULES=1` in `build.sh`.
 
 Add this target to a `copy_to_dist_dir` rule to copy it to the distribution
 directory, or `DIST_DIR`.

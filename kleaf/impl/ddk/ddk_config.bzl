@@ -18,7 +18,7 @@ load(
     ":common_providers.bzl",
     "DdkConfigInfo",
     "KernelBuildExtModuleInfo",
-    "KernelSerializedEnvInfo",
+    "KernelEnvAndOutputsInfo",
 )
 load(":config_utils.bzl", "config_utils")
 load(":debug.bzl", "debug")
@@ -36,14 +36,14 @@ def _ddk_config_impl(ctx):
         ddk_config_info = ddk_config_info,
     )
 
-    serialized_env_info = _create_serialized_env_info(
+    env_and_outputs_info = _create_env_and_outputs_info(
         ctx = ctx,
         out_dir = out_dir,
     )
 
     return [
         DefaultInfo(files = depset([out_dir])),
-        serialized_env_info,
+        env_and_outputs_info,
         ddk_config_info,
     ]
 
@@ -71,10 +71,6 @@ def _create_kconfig_ext_step(ctx, kconfig_depset_written):
         mkdir -p {intermediates_dir}
 
         # Copy all Kconfig files to our new KCONFIG_EXT directory
-        if [[ "${{KERNEL_DIR}}/" == "/" ]]; then
-            echo "ERROR: FATAL: KERNEL_DIR is not set!" >&2
-            exit 1
-        fi
         rsync -aL --include="*/" --include="Kconfig*" --exclude="*" ${{KERNEL_DIR}}/${{KCONFIG_EXT_PREFIX}} {intermediates_dir}/
 
         KCONFIG_EXT_PREFIX=$(realpath {intermediates_dir} --relative-to ${{ROOT_DIR}}/${{KERNEL_DIR}})/
@@ -148,13 +144,15 @@ def _create_main_action(
     kconfig_depset_written = utils.write_depset(ctx, ddk_config_info.kconfig, "kconfig_depset.txt")
     defconfig_depset_written = utils.write_depset(ctx, ddk_config_info.defconfig, "defconfig_depset.txt")
 
-    ddk_config_env = ctx.attr.kernel_build[KernelBuildExtModuleInfo].ddk_config_env
+    config_env_and_outputs_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].config_env_and_outputs_info
 
     transitive_inputs = [
-        ddk_config_env.inputs,
+        config_env_and_outputs_info.inputs,
+        ctx.attr.kernel_build[KernelBuildExtModuleInfo].module_scripts,
+        ctx.attr.kernel_build[KernelBuildExtModuleInfo].module_kconfig,
     ]
 
-    tools = ddk_config_env.tools
+    tools = config_env_and_outputs_info.tools
 
     merge_dot_config_step = _create_merge_dot_config_step(
         defconfig_depset_written = defconfig_depset_written,
@@ -178,8 +176,8 @@ def _create_main_action(
     for step in steps:
         transitive_inputs.append(step.inputs)
 
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = ddk_config_env,
+    command = config_env_and_outputs_info.get_setup_script(
+        data = config_env_and_outputs_info.data,
         restore_out_dir_cmd = utils.get_check_sandbox_cmd(),
     )
     command += kernel_utils.set_src_arch_cmd()
@@ -207,47 +205,50 @@ def _create_main_action(
         progress_message = "Creating DDK module configuration {}".format(ctx.label),
     )
 
-def _create_serialized_env_info(ctx, out_dir):
+def _create_env_and_outputs_info(ctx, out_dir):
     """Creates info for module build."""
 
     # Info from kernel_build
     if ctx.attr.generate_btf:
         # All outputs are required for BTF generation, including vmlinux image
-        pre_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].mod_full_env
+        pre_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].modules_env_and_all_outputs_info
     else:
-        pre_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].mod_min_env
+        pre_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].modules_env_and_minimal_outputs_info
 
     # Overlay module-specific configs
-    setup_script_cmd = """
-        . {pre_setup_script}
+    restore_outputs_cmd = """
         rsync -aL {out_dir}/.config ${{OUT_DIR}}/.config
         rsync -aL --chmod=D+w {out_dir}/include/ ${{OUT_DIR}}/include/
     """.format(
-        pre_setup_script = pre_info.setup_script.path,
         out_dir = out_dir.path,
     )
-    setup_script = ctx.actions.declare_file("{name}/{name}_setup.sh".format(name = ctx.attr.name))
-    ctx.actions.write(
-        output = setup_script,
-        content = setup_script_cmd,
-    )
-    return KernelSerializedEnvInfo(
-        setup_script = setup_script,
-        inputs = depset([out_dir, setup_script], transitive = [pre_info.inputs]),
+    return KernelEnvAndOutputsInfo(
+        get_setup_script = _env_and_outputs_info_get_setup_script,
+        inputs = depset([out_dir], transitive = [pre_info.inputs]),
         tools = pre_info.tools,
+        data = struct(
+            pre_info = pre_info,
+            restore_ddk_config_outputs_cmd = restore_outputs_cmd,
+        ),
     )
+
+def _env_and_outputs_info_get_setup_script(data, restore_out_dir_cmd):
+    """Returns the script for setting up module build."""
+    pre_info = data.pre_info
+    restore_ddk_config_outputs_cmd = data.restore_ddk_config_outputs_cmd
+
+    script = pre_info.get_setup_script(
+        data = pre_info.data,
+        restore_out_dir_cmd = restore_out_dir_cmd,
+    )
+    script += restore_ddk_config_outputs_cmd
+
+    return script
 
 def _create_ddk_config_info(ctx):
     module_label = Label(str(ctx.label).removesuffix("_config"))
     split_deps = kernel_utils.split_kernel_module_deps(ctx.attr.module_deps, module_label)
     ddk_config_deps = split_deps.ddk_configs
-
-    transitive_defconfigs = [
-        dep[DdkConfigInfo].defconfig
-        for dep in ddk_config_deps
-    ] + [
-        ctx.attr.kernel_build[KernelBuildExtModuleInfo].ddk_module_defconfig_fragments,
-    ]
 
     return DdkConfigInfo(
         kconfig = depset(
@@ -256,8 +257,8 @@ def _create_ddk_config_info(ctx):
             order = "postorder",
         ),
         defconfig = depset(
-            ctx.files.defconfig,  # this is at most one item
-            transitive = transitive_defconfigs,
+            ctx.files.defconfig,
+            transitive = [dep[DdkConfigInfo].defconfig for dep in ddk_config_deps],
             order = "postorder",
         ),
     )

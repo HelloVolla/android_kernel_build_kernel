@@ -18,9 +18,9 @@ load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
 load(
     ":common_providers.bzl",
+    "KernelBuildOriginalEnvInfo",
     "KernelEnvInfo",
 )
-load(":hermetic_toolchain.bzl", "hermetic_toolchain")
 load(":status.bzl", "status")
 
 visibility("//build/kernel/kleaf/...")
@@ -113,8 +113,7 @@ def _ext_mod_write_localversion(ctx, ext_mod):
     """Return command and inputs to get the SCM version for an external module.
 
     Args:
-        ctx: [ctx](https://bazel.build/rules/lib/ctx).
-            Must have `hermetic_tools` in toolchain.
+        ctx: [ctx](https://bazel.build/rules/lib/ctx)
         ext_mod: Defines the directory of the external module
     """
     if not ctx.attr._config_is_stamp[BuildSettingInfo].value:
@@ -123,8 +122,9 @@ def _ext_mod_write_localversion(ctx, ext_mod):
         """
         return struct(deps = [], cmd = cmd)
 
-    hermetic_tools = hermetic_toolchain.get(ctx)
-    inputs = [ctx.info_file, ctx.file._build_utils_sh]
+    inputs = [ctx.info_file]
+    transitive_inputs = [ctx.attr.kernel_build[KernelBuildOriginalEnvInfo].env_info.inputs]
+    tools = ctx.attr.kernel_build[KernelBuildOriginalEnvInfo].env_info.tools
 
     # This creates a separate action to set up scmversion to avoid direct
     # dependency on stable-status.txt which contains metadata of all git
@@ -132,18 +132,16 @@ def _ext_mod_write_localversion(ctx, ext_mod):
     # trigger a rebuild.
     localversion_file = ctx.actions.declare_file(ctx.label.name + "/localversion")
     scmversion_cmd = _get_status_at_path(ctx, "STABLE_SCMVERSIONS", shell.quote(ext_mod))
-    cmd = hermetic_tools.setup + """
-        . {build_utils_sh}
+    cmd = ctx.attr.kernel_build[KernelBuildOriginalEnvInfo].env_info.setup + """
         ( {scmversion_cmd} ) > {localversion_file}
     """.format(
-        build_utils_sh = ctx.file._build_utils_sh.path,
         scmversion_cmd = scmversion_cmd,
         localversion_file = localversion_file.path,
     )
     ctx.actions.run_shell(
-        inputs = depset(inputs),
+        inputs = depset(inputs, transitive = transitive_inputs),
         outputs = [localversion_file],
-        tools = hermetic_tools.deps,
+        tools = tools,
         command = cmd,
         progress_message = "Determining scmversion for module {}".format(ctx.label),
         mnemonic = "KernelModuleScmversion",
@@ -156,14 +154,6 @@ def _ext_mod_write_localversion(ctx, ext_mod):
     )
 
     return struct(deps = [localversion_file], cmd = ret_cmd)
-
-def _ext_mod_attrs():
-    return {
-        "_build_utils_sh": attr.label(
-            default = "//build/kernel:build_utils",
-            allow_single_file = True,
-        ),
-    }
 
 def _set_source_date_epoch(ctx):
     """Return command and inputs to set the value of `SOURCE_DATE_EPOCH`.
@@ -206,7 +196,6 @@ def _set_localversion_cmd(_ctx):
 stamp = struct(
     write_localversion = _write_localversion,
     ext_mod_write_localversion = _ext_mod_write_localversion,
-    ext_mod_attrs = _ext_mod_attrs,
     set_source_date_epoch = _set_source_date_epoch,
     set_localversion_cmd = _set_localversion_cmd,
 )

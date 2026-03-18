@@ -20,14 +20,12 @@
 #   need to be set/unset, see https://github.com/bazelbuild/bazel/discussions/18281
 #   for more details about this.
 # An empty string as argument requests the cache to be disabled.
-common:no_internet --repository_cache=
+build:no_internet --repository_cache=
 # Additional places to search for archives before accessing the network to download them.
-common:no_internet --distdir=
+build:no_internet --distdir=
 # If set, downloading using ctx.download{,_and_extract} is not allowed during repository fetching.
-common:no_internet --experimental_repository_disable_download
+build:no_internet --experimental_repository_disable_download
 
 # --config=internet: Relax the block on network access.
-common:internet --noexperimental_repository_disable_download
+build:internet --noexperimental_repository_disable_download
 
-# Disable internet access by default.
-common --config=no_internet

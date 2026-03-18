@@ -17,17 +17,17 @@ The rest of the arguments are passed to absltest.
 
 Example:
 
-    tools/bazel run //build/kernel/kleaf/tests/integration_test
+    bazel run //build/kernel/kleaf/tests/integration_test
 
-    tools/bazel run //build/kernel/kleaf/tests/integration_test \\
-      -- --bazel-arg=--verbose_failures --bazel-arg=--announce_rc
+    bazel run //build/kernel/kleaf/tests/integration_test \\
+      -- --bazel_arg=--verbose_failures --bazel_arg=--announce_rc
 
-    tools/bazel run //build/kernel/kleaf/tests/integration_test \\
-      -- QuickIntegrationTest.test_menuconfig_merge
+    bazel run //build/kernel/kleaf/tests/integration_test \\
+      -- KleafIntegrationTest.test_simple_incremental
 
-    tools/bazel run //build/kernel/kleaf/tests/integration_test \\
-      -- --bazel-arg=--verbose_failures --bazel-arg=--announce_rc \\
-         QuickIntegrationTest.test_menuconfig_merge \\
+    bazel run //build/kernel/kleaf/tests/integration_test \\
+      -- --bazel_arg=--verbose_failures --bazel_arg=--announce_rc \\
+         KleafIntegrationTest.test_simple_incremental \\
          --verbosity=2
 
     tools/bazel run //build/kernel/kleaf/tests/integration_test \\
@@ -36,7 +36,6 @@ Example:
 """
 
 import argparse
-import contextlib
 import hashlib
 import os
 import re
@@ -48,7 +47,7 @@ import pathlib
 import tempfile
 import textwrap
 import unittest
-from typing import Any, Callable, Iterable, TextIO
+from typing import Callable, Iterable
 
 from absl.testing import absltest
 from build.kernel.kleaf.analysis.inputs import analyze_inputs
@@ -85,24 +84,10 @@ def load_arguments():
                         dest="include_abi_tests",
                         help="Include ABI Monitoring related tests." +
                         "NOTE: It requires a branch with ABI monitoring enabled.")
-    group = parser.add_argument_group("CI", "flags for ci.android.com")
-    group.add_argument("--test_result_dir",
-                       type=_require_absolute_path,
-                       help="""Directory to store test results to be used in :reporter.
-
-                            If set, this script always has exit code 0.
-                       """)
     return parser.parse_known_args()
 
 
 arguments = None
-
-
-def _require_absolute_path(p: str) -> pathlib.Path:
-    path = pathlib.Path(p)
-    if not path.is_absolute():
-        raise ValueError(f"{p} is not absolute")
-    return path
 
 
 class Exec(object):
@@ -139,8 +124,7 @@ class Exec(object):
         kwargs.setdefault("text", True)
         sys.stderr.write(f"+ {' '.join(args)}\n")
         return subprocess.run(
-            args, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs).stdout
-
+            args, check = False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs).stdout
 
 class KleafIntegrationTestBase(unittest.TestCase):
 
@@ -150,7 +134,6 @@ class KleafIntegrationTestBase(unittest.TestCase):
                     startup_options=(),
                     **kwargs) -> None:
         """Executes a bazel command."""
-
         startup_options = list(startup_options)
         startup_options.append(f"--bazelrc={self._bazel_rc.name}")
         command_args = list(command_args)
@@ -223,7 +206,6 @@ class KleafIntegrationTestBase(unittest.TestCase):
                 new_file.write(old_content)
 
         self.addCleanup(cleanup)
-        return cleanup
 
     def filter_lines(
         self,
@@ -300,25 +282,23 @@ class KleafIntegrationTestAbiTest(KleafIntegrationTestBase):
         """
 
         if not arguments.include_abi_tests:
-            self.skipTest("--include-abi-tests is not set.")
+          self.skipTest("Skipping test_non_exported_symbol_fails test.")
 
         # Select an arbitrary driver and unexport a symbols.
         self.driver_file = f"{self._common()}/drivers/i2c/i2c-core-base.c"
         self.restore_file_after_test(self.driver_file)
         self.replace_lines(self.driver_file,
-                           lambda x: re.search(
-                               "EXPORT_SYMBOL_GPL\(i2c_adapter_type\);", x),
+                           lambda x: re.search("EXPORT_SYMBOL_GPL\(i2c_adapter_type\);", x),
                            [""])
 
         # Check for errors in the logs.
-        output = self._check_errors(
-            "build", [f"//{self._common()}:db845c", "--config=fast"])
+        output = self._check_errors("build", [f"//{self._common()}:db845c", "--config=fast"])
 
         def matching_line(line): return re.match(
-            r"^ERROR: modpost: \"i2c_adapter_type\" \[.*\] undefined!$",
-            line)
+             r"^ERROR: modpost: \"i2c_adapter_type\" \[.*\] undefined!$",
+             line)
         self.assertTrue(
-            any([matching_line(line) for line in output.splitlines()]))
+             any([matching_line(line) for line in output.splitlines()]))
 
 
 # Slow integration tests belong to their own shard.
@@ -338,40 +318,6 @@ class KleafIntegrationTestShard1(KleafIntegrationTestBase):
                     ["--lto=thin"] + _LOCAL)
         self._build([f"//{self._common()}:kernel_dist"] + _LTO_NONE + _LOCAL)
 
-    def test_config_sync(self):
-        """Test that, with --config=local, .config is reflected in vmlinux.
-
-        See b/312268956.
-        """
-
-        gki_defconfig_path = (
-            f"{self._common()}/arch/arm64/configs/gki_defconfig")
-        restore_defconfig = self.restore_file_after_test(gki_defconfig_path)
-        extract_ikconfig = f"{self._common()}/scripts/extract-ikconfig"
-
-        with open(gki_defconfig_path, encoding="utf-8") as f:
-            self.assertIn("CONFIG_UAPI_HEADER_TEST=y\n", f)
-
-        self._build([f"//{self._common()}:kernel_aarch64", "--config=fast"])
-        vmlinux = pathlib.Path(
-            f"bazel-bin/{self._common()}/kernel_aarch64/vmlinux")
-
-        output = subprocess.check_output([extract_ikconfig, vmlinux], text=True)
-        self.assertIn("CONFIG_UAPI_HEADER_TEST=y", output.splitlines())
-
-        self.filter_lines(gki_defconfig_path,
-                          lambda x: "CONFIG_UAPI_HEADER_TEST" not in x)
-        self._build([f"//{self._common()}:kernel_aarch64", "--config=fast"])
-
-        output = subprocess.check_output([extract_ikconfig, vmlinux], text=True)
-        self.assertIn("# CONFIG_UAPI_HEADER_TEST is not set",
-                      output.splitlines())
-
-        restore_defconfig()
-        self._build([f"//{self._common()}:kernel_aarch64", "--config=fast"])
-
-        output = subprocess.check_output([extract_ikconfig, vmlinux], text=True)
-        self.assertIn("CONFIG_UAPI_HEADER_TEST=y", output.splitlines())
 
 class KleafIntegrationTestShard2(KleafIntegrationTestBase):
 
@@ -399,8 +345,6 @@ class KleafIntegrationTestShard2(KleafIntegrationTestBase):
 # Quick integration tests. Each test case should finish within 1 minute.
 # The whole test suite should finish within 5 minutes. If the whole test suite
 # takes too long, consider sharding QuickIntegrationTest too.
-
-
 class QuickIntegrationTest(KleafIntegrationTestBase):
 
     def test_change_to_core_kernel_does_not_affect_modules_prepare(self):
@@ -482,26 +426,23 @@ class QuickIntegrationTest(KleafIntegrationTestBase):
         """Tests that out/ can be overridden.
 
         See b/267580482."""
-        new_out1 = tempfile.TemporaryDirectory()
-        new_out2 = tempfile.TemporaryDirectory()
-        self.addCleanup(new_out1.cleanup)
-        self.addCleanup(new_out2.cleanup)
-        shutil.rmtree(new_out1.name)
-        shutil.rmtree(new_out2.name)
-
-        self._check_call(startup_options=[f"--output_root={new_out1.name}"],
+        default_out = pathlib.Path("out")
+        new_out = tempfile.TemporaryDirectory()
+        self.addCleanup(new_out.cleanup)
+        try:
+            shutil.rmtree(default_out)
+        except FileNotFoundError:
+            pass
+        self._check_call(command="build",
+                         command_args=["//build/kernel/kleaf:empty_test"] +
+                         _FASTEST)
+        self.assertTrue(default_out.exists())
+        shutil.rmtree(default_out)
+        self._check_call(startup_options=[f"--output_root={new_out.name}"],
                          command="build",
                          command_args=["//build/kernel/kleaf:empty_test"] +
                          _FASTEST)
-        self.assertTrue(pathlib.Path(new_out1.name).exists())
-        self.assertFalse(pathlib.Path(new_out2.name).exists())
-        shutil.rmtree(new_out1.name)
-        self._check_call(startup_options=[f"--output_root={new_out2.name}"],
-                         command="build",
-                         command_args=["//build/kernel/kleaf:empty_test"] +
-                         _FASTEST)
-        self.assertFalse(pathlib.Path(new_out1.name).exists())
-        self.assertTrue(pathlib.Path(new_out2.name).exists())
+        self.assertFalse(default_out.exists())
 
     def test_config_uapi_header_test(self):
         """Tests that CONFIG_UAPI_HEADER_TEST is not deleted.
@@ -787,70 +728,7 @@ class ScmversionIntegrationTest(KleafIntegrationTestBase):
             self.assertRegexpMatches(scmversion, scmversion_pat)
 
 
-# Class that mimics tee(1)
-class Tee(object):
-    def __init__(self, stream: TextIO, path: pathlib.Path):
-        self._stream = stream
-        self._path = path
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._stream, name)
-
-    def write(self, *args, **kwargs) -> int:
-        # Ignore short write to console
-        self._stream.write(*args, **kwargs)
-        return self._file.write(*args, **kwargs)
-
-    def __enter__(self) -> "Tee":
-        self._file = open(self._path, "w")
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._file.close()
-
-
-def _get_exit_code(exc: SystemExit):
-    if exc.code is None:
-        return 0
-    # absltest calls sys.exit() with a boolean value.
-    if type(exc.code) == bool:
-        return int(exc.code)
-    if type(exc.code) == int:
-        return exc.code
-    print(
-        f"ERROR: Unknown exit code: {e.code}, exiting with code 1",
-        file=sys.stderr)
-    return 1
-
-
 if __name__ == "__main__":
     arguments, unknown = load_arguments()
-
-    if not arguments.test_result_dir:
-        sys.argv[1:] = unknown
-        absltest.main()
-        sys.exit(0)
-
-    # If --test_result_dir is set, also set --xml_output_file for :reporter.
-    unknown += [
-        "--xml_output_file",
-        str(arguments.test_result_dir / "output.xml")
-    ]
     sys.argv[1:] = unknown
-
-    os.makedirs(arguments.test_result_dir, exist_ok=True)
-    stdout_path = arguments.test_result_dir / "stdout.txt"
-    stderr_path = arguments.test_result_dir / "stderr.txt"
-    with Tee(sys.__stdout__, stdout_path) as stdout_tee, \
-            Tee(sys.__stderr__, stderr_path) as stderr_tee, \
-            contextlib.redirect_stdout(stdout_tee), \
-            contextlib.redirect_stderr(stderr_tee):
-        try:
-            absltest.main()
-            exit_code = 0
-        except SystemExit as e:
-            exit_code = _get_exit_code(e)
-
-    exit_code_path = arguments.test_result_dir / "exitcode.txt"
-    with open(exit_code_path, "w") as exit_code_file:
-        exit_code_file.write(f"{exit_code}\n")
+    absltest.main()

@@ -30,7 +30,7 @@ from typing import Optional, TextIO, Any
 _SOURCE_SUFFIXES = (
     ".c",
     ".rs",
-    ".S",
+    ".s",
 )
 
 
@@ -67,17 +67,11 @@ def die(*args, **kwargs):
     raise DieException(*args, **kwargs)
 
 
-def _get_license_str():
-  return textwrap.dedent("""\
-    # SPDX-License-Identifier: GPL-2.0
-
-  """)
-
 def _gen_makefile(
         module_symvers_list: list[pathlib.Path],
         output_makefile: pathlib.Path,
 ):
-    content = _get_license_str()
+    content = ""
 
     for module_symvers in module_symvers_list:
         content += textwrap.dedent(f"""\
@@ -86,7 +80,7 @@ def _gen_makefile(
             """)
 
     content += textwrap.dedent("""\
-        modules modules_install clean compile_commands.json:
+        modules modules_install clean:
         \t$(MAKE) -C $(KERNEL_SRC) M=$(M) $(KBUILD_OPTIONS) KBUILD_EXTRA_SYMBOLS="$(EXTRA_SYMBOLS)" $(@)
         """)
 
@@ -184,7 +178,6 @@ def _gen_ddk_makefile_for_module(
     copts = json.load(copt_file) if copt_file else None
 
     with open(kbuild, "w") as out_file, open(out_cflags_path, "w") as out_cflags:
-        out_file.write(_get_license_str())
         out_file.write(textwrap.dedent(f"""\
             # Build {package / kernel_module_out}
             obj-m += {kernel_module_out.with_suffix('.o').name}
@@ -253,7 +246,6 @@ def _gen_ddk_makefile_for_module(
     if top_kbuild != kbuild:
         os.makedirs(output_makefiles, exist_ok=True)
         with open(top_kbuild, "w") as out_file:
-            out_file.write(_get_license_str())
             out_file.write(textwrap.dedent(f"""\
                 # Build {package / kernel_module_out}
                 obj-y += {kernel_module_out.parent}/
@@ -274,7 +266,7 @@ def _check_srcs_valid(rel_srcs: list[dict[str, Any]],
     for rel_item in rel_srcs:
         files = rel_item["files"]
         rel_srcs_flat.extend(
-            file for file in files if file.suffix in _SOURCE_SUFFIXES)
+            file for file in files if file.suffix.lower() in _SOURCE_SUFFIXES)
 
     source_files_with_name_of_kernel_module = \
         [src for src in rel_srcs_flat if src.with_suffix(
@@ -295,9 +287,9 @@ def _handle_src(
         obj_suffix: str,
 ):
     # Ignore non-exported headers specified in srcs
-    if src.suffix in (".h",):
+    if src.suffix.lower() in (".h",):
         return
-    if src.suffix not in _SOURCE_SUFFIXES:
+    if src.suffix.lower() not in _SOURCE_SUFFIXES:
         die("Invalid source %s", src)
     if not src.is_relative_to(kernel_module_out.parent):
         die("%s is not a valid source because it is not under %s",

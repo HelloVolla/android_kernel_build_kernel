@@ -27,29 +27,21 @@ load(
 load(":cache_dir.bzl", "cache_dir")
 load(
     ":common_providers.bzl",
-    "CompileCommandsInfo",
-    "CompileCommandsSingleInfo",
     "DdkConfigInfo",
     "DdkSubmoduleInfo",
-    "GcovInfo",
     "KernelBuildExtModuleInfo",
     "KernelCmdsInfo",
+    "KernelEnvAndOutputsInfo",
     "KernelEnvAttrInfo",
     "KernelModuleInfo",
     "KernelModuleSetupInfo",
-    "KernelSerializedEnvInfo",
     "KernelUnstrippedModulesInfo",
     "ModuleSymversInfo",
 )
-load(":compile_commands_utils.bzl", "compile_commands_utils")
 load(":ddk/ddk_headers.bzl", "DdkHeadersInfo")
 load(":debug.bzl", "debug")
 load(":hermetic_toolchain.bzl", "hermetic_toolchain")
-load(
-    ":kernel_build.bzl",
-    "get_grab_cmd_step",
-    "get_grab_gcno_step",
-)
+load(":kernel_build.bzl", "get_grab_cmd_step")
 load(":stamp.bzl", "stamp")
 load(":utils.bzl", "kernel_utils")
 
@@ -266,22 +258,10 @@ def _kernel_module_impl(ctx):
     _check_module_symvers_restore_path(kernel_module_deps, ctx.label)
 
     # Define where to build the external module (default to the package name)
-    if ctx.attr.makefile:
-        ext_mod_label = ctx.attr.makefile[0].label
-    else:
-        ext_mod_label = ctx.label
-    ext_mod = paths.join(ext_mod_label.workspace_root, ext_mod_label.package)
-
-    if not ext_mod:
-        fail("""{label}: kernel_module must not be defined at the top-level package of the main repository.
-                Move it to a sub-package, e.g. @{workspace_name}//{label_name}:{label_name}""".format(
-            label = ctx.label,
-            workspace_name = ctx.label.workspace_name,
-            label_name = ctx.label.name,
-        ))
+    ext_mod = ctx.attr.makefile[0].label.package if ctx.attr.makefile else ctx.label.package
 
     if ctx.files.makefile and ctx.file.internal_ddk_makefiles_dir:
-        fail("{label}: must not define `makefile` for `ddk_module`".format(ctx.label))
+        fail("{}: must not define `makefile` for `ddk_module`")
 
     inputs = []
     inputs += ctx.files.makefile
@@ -293,6 +273,7 @@ def _kernel_module_impl(ctx):
     module_srcs = depset(transitive = module_srcs)
 
     transitive_inputs = [module_srcs]
+    transitive_inputs.append(ctx.attr.kernel_build[KernelBuildExtModuleInfo].module_scripts)
     for kernel_module_dep in kernel_module_deps:
         transitive_inputs.append(kernel_module_dep.kernel_module_setup_info.inputs)
 
@@ -302,7 +283,6 @@ def _kernel_module_impl(ctx):
     tools = [
         ctx.executable._check_declared_output_list,
         ctx.executable._search_and_cp_output,
-        ctx.executable._print_gcno_mapping,
     ]
     transitive_tools = []
 
@@ -360,32 +340,22 @@ def _kernel_module_impl(ctx):
         common_config_tags = ctx.attr.kernel_build[KernelEnvAttrInfo].common_config_tags,
         symlink_name = "module_{}".format(ctx.attr.name),
     )
-    grab_cmd_step = get_grab_cmd_step(ctx, "${OUT_DIR}/${ext_mod_rel}")
-    grab_gcno_step = get_grab_gcno_step(ctx, "${OUT_DIR}/${ext_mod_rel}", is_kernel_build = False)
-    compile_commands_step = compile_commands_utils.get_step(ctx, "${OUT_DIR}/${ext_mod_rel}")
-
-    for step in (
-        cache_dir_step,
-        grab_cmd_step,
-        grab_gcno_step,
-        compile_commands_step,
-    ):
-        inputs += step.inputs
-        command_outputs += step.outputs
-        tools += step.tools
+    inputs += cache_dir_step.inputs
+    command_outputs += cache_dir_step.outputs
+    tools += cache_dir_step.tools
 
     # Determine the proper script to set up environment
     if ctx.attr.internal_ddk_config:
-        setup_info = ctx.attr.internal_ddk_config[KernelSerializedEnvInfo]
+        setup_info = ctx.attr.internal_ddk_config[KernelEnvAndOutputsInfo]
     elif ctx.attr.generate_btf:
         # All outputs are required for BTF generation, including vmlinux image
-        setup_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].mod_full_env
+        setup_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].modules_env_and_all_outputs_info
     else:
-        setup_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].mod_min_env
+        setup_info = ctx.attr.kernel_build[KernelBuildExtModuleInfo].modules_env_and_minimal_outputs_info
     transitive_inputs.append(setup_info.inputs)
     transitive_tools.append(setup_info.tools)
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = setup_info,
+    command = setup_info.get_setup_script(
+        data = setup_info.data,
         restore_out_dir_cmd = cache_dir_step.cmd,
     )
 
@@ -420,6 +390,10 @@ def _kernel_module_impl(ctx):
             modules_staging_dir = modules_staging_dws.directory.path,
         )
 
+    grab_cmd_step = get_grab_cmd_step(ctx, "${OUT_DIR}/${ext_mod_rel}")
+    inputs += grab_cmd_step.inputs
+    command_outputs += grab_cmd_step.outputs
+
     scmversion_ret = stamp.ext_mod_write_localversion(ctx, ext_mod)
     inputs += scmversion_ret.deps
     command += scmversion_ret.cmd
@@ -443,18 +417,6 @@ def _kernel_module_impl(ctx):
     command += modpost_warn.cmd
     command_outputs += modpost_warn.outputs
 
-    # Keep a record of the modules.order generated by `make`.
-    modules_order = ctx.actions.declare_file("{}/modules.order".format(ctx.attr.name))
-    command_outputs.append(modules_order)
-    grab_modules_order_cmd = """
-        # Backup modules.order files before optionally dropping them.
-        cp -L -p {modules_staging_dir}/lib/modules/*/extra/{ext_mod}/modules.order.* {modules_order}
-    """.format(
-        ext_mod = ext_mod,
-        modules_staging_dir = modules_staging_dws.directory.path,
-        modules_order = modules_order.path,
-    )
-
     make_filter = ""
     if not ctx.attr.generate_btf:
         # Filter out warnings if there is no need for BTF generation
@@ -465,25 +427,7 @@ def _kernel_module_impl(ctx):
                ext_mod_rel=$(realpath ${{ROOT_DIR}}/{ext_mod} --relative-to ${{KERNEL_DIR}})
 
              # Actual kernel module build
-               make -C {ext_mod} ${{TOOL_ARGS}} M=${{ext_mod_rel}} VPATH=${{ROOT_DIR}}/${{KERNEL_DIR}} O=${{OUT_DIR}} KERNEL_SRC=${{ROOT_DIR}}/${{KERNEL_DIR}} {make_filter} {make_redirect}
-    """.format(
-        ext_mod = ext_mod,
-        make_filter = make_filter,
-        make_redirect = modpost_warn.make_redirect,
-    )
-
-    # TODO(b/291955924): make the `make` invocations parallel
-    for goal in compile_commands_utils.additional_make_goals(ctx):
-        command += """
-                make -C {ext_mod} ${{TOOL_ARGS}} M=${{ext_mod_rel}} O=${{OUT_DIR}} KERNEL_SRC=${{ROOT_DIR}}/${{KERNEL_DIR}} {goal} {make_filter} {make_redirect}
-        """.format(
-            ext_mod = ext_mod,
-            goal = goal,
-            make_filter = make_filter,
-            make_redirect = modpost_warn.make_redirect,
-        )
-
-    command += """
+               make -C {ext_mod} ${{TOOL_ARGS}} M=${{ext_mod_rel}} O=${{OUT_DIR}} KERNEL_SRC=${{ROOT_DIR}}/${{KERNEL_DIR}} {make_filter} {make_redirect}
              # Install into staging directory
                make -C {ext_mod} ${{TOOL_ARGS}} DEPMOD=true M=${{ext_mod_rel}} \
                    O=${{OUT_DIR}} KERNEL_SRC=${{ROOT_DIR}}/${{KERNEL_DIR}}     \
@@ -511,21 +455,18 @@ def _kernel_module_impl(ctx):
 
              # Grab unstripped modules
                {grab_unstripped_cmd}
-             # Grab *.gcno files
-               {grab_gcno_step_cmd}
              # Grab *.cmd
                {grab_cmd_cmd}
-             # Grab compile_commands.json
-               {compile_commands_cmd}
              # Move Module.symvers
                rsync -aL ${{OUT_DIR}}/${{ext_mod_rel}}/Module.symvers {module_symvers}
-             # Grab and then drop modules.order
-               {grab_modules_order_cmd}
+
                {drop_modules_order_cmd}
                """.format(
         label = ctx.label,
         ext_mod = ext_mod,
         generate_btf = int(ctx.attr.generate_btf),
+        make_filter = make_filter,
+        make_redirect = modpost_warn.make_redirect,
         module_symvers = module_symvers.path,
         modules_staging_dir = modules_staging_dws.directory.path,
         outdir = outdir,
@@ -535,11 +476,8 @@ def _kernel_module_impl(ctx):
         all_module_names_file = all_module_names_file.path,
         grab_unstripped_cmd = grab_unstripped_cmd,
         check_no_remaining = check_no_remaining.path,
-        grab_modules_order_cmd = grab_modules_order_cmd,
         drop_modules_order_cmd = drop_modules_order_cmd,
-        grab_gcno_step_cmd = grab_gcno_step.cmd,
         grab_cmd_cmd = grab_cmd_step.cmd,
-        compile_commands_cmd = compile_commands_step.cmd,
     )
 
     command += dws.record(modules_staging_dws)
@@ -612,7 +550,6 @@ def _kernel_module_impl(ctx):
             progress_message = "Copying outputs {}".format(ctx.label),
         )
 
-    module_symvers_restore_path = paths.join(ext_mod, ctx.attr.internal_module_symvers_name)
     setup = """
              # Use a new shell to avoid polluting variables
                (
@@ -622,15 +559,14 @@ def _kernel_module_impl(ctx):
                mkdir -p ${{ROOT_DIR}}/{ext_mod}
                ext_mod_rel=$(realpath ${{ROOT_DIR}}/{ext_mod} --relative-to ${{KERNEL_DIR}})
              # Restore Modules.symvers
-               mkdir -p $(dirname ${{COMMON_OUT_DIR}}/{module_symvers_restore_path})
-               rsync -aL {module_symvers} ${{COMMON_OUT_DIR}}/{module_symvers_restore_path}
+               mkdir -p $(dirname ${{OUT_DIR}}/${{ext_mod_rel}}/{internal_module_symvers_name})
+               rsync -aL {module_symvers} ${{OUT_DIR}}/${{ext_mod_rel}}/{internal_module_symvers_name}
              # New shell ends
                )
     """.format(
         ext_mod = ext_mod,
         module_symvers = module_symvers.path,
         internal_module_symvers_name = ctx.attr.internal_module_symvers_name,
-        module_symvers_restore_path = module_symvers_restore_path,
     )
 
     if ctx.attr.internal_ddk_makefiles_dir:
@@ -670,7 +606,6 @@ def _kernel_module_impl(ctx):
             files = depset(output_files),
             packages = depset([ext_mod]),
             label = ctx.label,
-            modules_order = depset([modules_order]),
         ),
         KernelUnstrippedModulesInfo(
             directories = depset([unstripped_dir], order = "postorder"),
@@ -680,31 +615,18 @@ def _kernel_module_impl(ctx):
             # path/to/package/target_name/target_name_Module.symvers -> path/to/package/target_name_Module.symvers;
             # This is similar to ${{OUT_DIR}}/${{ext_mod_rel}}
             # It is needed to remove the `target_name` because we declare_file({name}/{internal_module_symvers_name}) above.
-            restore_paths = depset([module_symvers_restore_path]),
+            restore_paths = depset([paths.join(ext_mod, ctx.attr.internal_module_symvers_name)]),
         ),
         ddk_headers_info,
         ddk_config_info,
-        GcovInfo(
-            gcno_mapping = grab_gcno_step.outputs,
-            gcno_dir = grab_gcno_step.gcno_dir,
-        ),
         KernelCmdsInfo(
             srcs = module_srcs,
             directories = depset([grab_cmd_step.cmd_dir]),
         ),
-        CompileCommandsInfo(
-            infos = depset([CompileCommandsSingleInfo(
-                compile_commands_with_vars = compile_commands_step.compile_commands_with_vars,
-                compile_commands_common_out_dir = compile_commands_step.compile_commands_common_out_dir,
-            )]),
-        ),
     ]
 
 def _kernel_module_additional_attrs():
-    return cache_dir.attrs() | stamp.ext_mod_attrs() | {
-        attr_name: attr.label(default = label)
-        for attr_name, label in compile_commands_utils.config_settings_raw().items()
-    }
+    return cache_dir.attrs()
 
 _kernel_module = rule(
     implementation = _kernel_module_impl,
@@ -726,10 +648,7 @@ _kernel_module = rule(
         "internal_module_symvers_name": attr.string(default = "Module.symvers"),
         "internal_drop_modules_order": attr.bool(),
         "internal_exclude_kernel_build_module_srcs": attr.bool(),
-        "internal_ddk_config": attr.label(providers = [
-            KernelSerializedEnvInfo,
-            DdkConfigInfo,
-        ]),
+        "internal_ddk_config": attr.label(providers = [KernelEnvAndOutputsInfo]),
         "generate_btf": attr.bool(
             default = False,
             doc = "See [kernel_module.generate_btf](#kernel_module-generate_btf)",
@@ -748,18 +667,12 @@ _kernel_module = rule(
             executable = True,
             doc = "Label referring to the script to process outputs",
         ),
-        "_print_gcno_mapping": attr.label(
-            default = Label("//build/kernel/kleaf/impl:print_gcno_mapping"),
-            cfg = "exec",
-            executable = True,
-        ),
         "_check_declared_output_list": attr.label(
             default = Label("//build/kernel/kleaf:check_declared_output_list"),
             cfg = "exec",
             executable = True,
         ),
         "_config_is_stamp": attr.label(default = "//build/kernel/kleaf:config_stamp"),
-        "_gcov": attr.label(default = "//build/kernel/kleaf:gcov"),
         "_preserve_cmd": attr.label(default = "//build/kernel/kleaf/impl:preserve_cmd"),
         "_debug_print_scripts": attr.label(default = "//build/kernel/kleaf:debug_print_scripts"),
         "_debug_modpost_warn": attr.label(default = "//build/kernel/kleaf:debug_modpost_warn"),

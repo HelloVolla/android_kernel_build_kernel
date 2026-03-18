@@ -16,10 +16,10 @@ Rules for building boot images.
 """
 
 load("@bazel_skylib//lib:paths.bzl", "paths")
-load(":common_providers.bzl", "KernelBuildInfo", "KernelSerializedEnvInfo")
+load(":common_providers.bzl", "KernelBuildInfo", "KernelEnvAndOutputsInfo")
 load(":debug.bzl", "debug")
 load(":image/initramfs.bzl", "InitramfsInfo")
-load(":utils.bzl", "kernel_utils", "utils")
+load(":utils.bzl", "utils")
 
 visibility("//build/kernel/kleaf/...")
 
@@ -27,8 +27,7 @@ def _boot_images_impl(ctx):
     ## Declare implicit outputs of the command
     ## This is like ctx.actions.declare_directory(ctx.label.name) without actually declaring it.
     outdir_short = paths.join(
-        ctx.label.workspace_root,
-        ctx.label.package,
+        paths.dirname(ctx.build_file_path),
         ctx.label.name,
     )
     outdir = paths.join(
@@ -68,14 +67,14 @@ def _boot_images_impl(ctx):
 
     transitive_inputs = [
         kernel_build_outs,
-        ctx.attr.kernel_build[KernelSerializedEnvInfo].inputs,
+        ctx.attr.kernel_build[KernelEnvAndOutputsInfo].inputs,
     ]
 
     tools = [ctx.executable._search_and_cp_output]
-    transitive_tools = [ctx.attr.kernel_build[KernelSerializedEnvInfo].tools]
+    transitive_tools = [ctx.attr.kernel_build[KernelEnvAndOutputsInfo].tools]
 
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = ctx.attr.kernel_build[KernelSerializedEnvInfo],
+    command = ctx.attr.kernel_build[KernelEnvAndOutputsInfo].get_setup_script(
+        data = ctx.attr.kernel_build[KernelEnvAndOutputsInfo].data,
         restore_out_dir_cmd = utils.get_check_sandbox_cmd(),
     )
 
@@ -149,17 +148,6 @@ def _boot_images_impl(ctx):
                BUILD_INITRAMFS=
                INITRAMFS_STAGING_DIR=
         """
-    if ctx.attr.unpack_ramdisk:
-        boot_flag_cmd += """
-            if [[ -n ${SKIP_UNPACKING_RAMDISK} ]]; then
-                echo "WARNING: Using SKIP_UNPACKING_RAMDISK in build config is deprecated." >&2
-                echo "  Use unpack_ramdisk in kernel_image instead." >&2
-            fi
-        """
-    else:
-        boot_flag_cmd += """
-            SKIP_UNPACKING_RAMDISK=1
-        """
     if ctx.attr.avb_sign_boot_img:
         if not ctx.attr.avb_boot_partition_size or \
            not ctx.attr.avb_boot_key or not ctx.attr.avb_boot_algorithm or \
@@ -221,7 +209,7 @@ Execute `build_boot_images` in `build_utils.sh`.""",
     attrs = {
         "kernel_build": attr.label(
             mandatory = True,
-            providers = [KernelSerializedEnvInfo, KernelBuildInfo],
+            providers = [KernelEnvAndOutputsInfo, KernelBuildInfo],
         ),
         "initramfs": attr.label(
             providers = [InitramfsInfo],
@@ -241,15 +229,6 @@ Execute `build_boot_images` in `build_utils.sh`.""",
 * If `None`, skip `vendor_boot`.
 """, values = ["vendor_boot", "vendor_kernel_boot"]),
         "vendor_ramdisk_binaries": attr.label_list(allow_files = True),
-        "unpack_ramdisk": attr.bool(
-            doc = """ When false it skips unpacking the vendor ramdisk and copy it as
-            is, without modifications, into the boot image. Also skip the mkbootfs step.
-
-            It defaults to True. (Allowing falling back to the value in build config.
-            This will change in the future, after giving notice about its deprecation.)
-            """,
-            default = True,
-        ),
         "avb_sign_boot_img": attr.bool(
             doc = """ If set to `True` signs the boot image using the avb_boot_key.
             The kernel prebuilt tool `avbtool` is used for signing.""",

@@ -22,30 +22,27 @@ load(
 visibility("//build/kernel/kleaf/...")
 
 _FORCE_ADD_VMLINUX_SETTING = "//build/kernel/kleaf/impl:force_add_vmlinux"
+_KBUILD_SYMTYPES_SETTING = "//build/kernel/kleaf:kbuild_symtypes"
 FORCE_IGNORE_BASE_KERNEL_SETTING = "//build/kernel/kleaf/impl:force_ignore_base_kernel"
 
-_WITH_VMLINUX_TRANSITION_SETTINGS = [
+_WITH_VMLINUX_TRANSITION_OUTPUT_SETTINGS = [
     _FORCE_ADD_VMLINUX_SETTING,
+    _KBUILD_SYMTYPES_SETTING,
     FORCE_IGNORE_BASE_KERNEL_SETTING,
 ]
 
-def _with_vmlinx_transition_impl(settings, attr):
+def _with_vmlinx_transition_impl(_settings, _attr):
     """with_vmlinux: outs += [vmlinux]; base_kernel = None; kbuild_symtypes = True"""
-
-    # This is basically no-op, but we need to return the same outpus so that
-    #  _notrim_transition_impl works.
-    if not attr.enable_add_vmlinux:
-        return settings
-
     return {
         _FORCE_ADD_VMLINUX_SETTING: True,
         FORCE_IGNORE_BASE_KERNEL_SETTING: True,
+        _KBUILD_SYMTYPES_SETTING: True,
     }
 
 with_vmlinux_transition = transition(
     implementation = _with_vmlinx_transition_impl,
-    inputs = _WITH_VMLINUX_TRANSITION_SETTINGS,
-    outputs = _WITH_VMLINUX_TRANSITION_SETTINGS,
+    inputs = [],
+    outputs = _WITH_VMLINUX_TRANSITION_OUTPUT_SETTINGS,
 )
 
 def _notrim_transition_impl(settings, attr):
@@ -56,16 +53,8 @@ def _notrim_transition_impl(settings, attr):
 
 notrim_transition = transition(
     implementation = _notrim_transition_impl,
-    inputs = _WITH_VMLINUX_TRANSITION_SETTINGS,
-    outputs = _WITH_VMLINUX_TRANSITION_SETTINGS + [
+    inputs = [],
+    outputs = _WITH_VMLINUX_TRANSITION_OUTPUT_SETTINGS + [
         FORCE_DISABLE_TRIM,
     ],
 )
-
-def abi_common_attrs():
-    return {
-        "enable_add_vmlinux": attr.bool(
-            doc = "If `True` enables `kernel_build_add_vmlinux` transition.",
-            default = True,
-        ),
-    }

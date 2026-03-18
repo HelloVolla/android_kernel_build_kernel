@@ -15,13 +15,11 @@
 """This test checks that device targets contains proper modules."""
 
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("//build/kernel/kleaf/tests:empty_test.bzl", "empty_test")
 load("//build/kernel/kleaf/impl:common_providers.bzl", "KernelModuleInfo")
-load("//build/kernel/kleaf/impl:hermetic_exec.bzl", "hermetic_exec_test")
 load("//build/kernel/kleaf/impl:kernel_build.bzl", "kernel_build")
 load("//build/kernel/kleaf/impl:kernel_modules_install.bzl", "kernel_modules_install")
 load("//build/kernel/kleaf/impl:utils.bzl", "kernel_utils")
-load("//build/kernel/kleaf/tests:empty_test.bzl", "empty_test")
-load(":py_test_hack.bzl", "run_py_binary_cmd")
 
 visibility("//build/kernel/kleaf/...")
 
@@ -48,26 +46,34 @@ def _check_signature(
         base_kernel_module,
         expect_signature,
         directory):
-    test_binary = Label("//build/kernel/kleaf/artifact_tests:check_module_signature")
+    script = "//build/kernel/kleaf/artifact_tests:check_module_signature.py"
+    modinfo = "//build/kernel:hermetic-tools/modinfo"
     args = [
         "--module",
         base_kernel_module,
         "--expect_signature" if expect_signature else "--noexpect_signature",
+        "--modinfo",
+        "$(location {})".format(modinfo),
     ]
-    data = [test_binary]
+    data = [modinfo]
     if directory:
         args += [
             "--dir",
-            "$(rootpath {})".format(directory),
+            "$(location {})".format(directory),
         ]
         data.append(directory)
-
-    hermetic_exec_test(
+    native.py_test(
         name = name,
+        main = script,
+        srcs = [script],
+        python_version = "PY3",
         data = data,
-        script = run_py_binary_cmd(test_binary),
         args = args,
         timeout = "short",
+        deps = [
+            "@io_abseil_py//absl/flags",
+            "@io_abseil_py//absl/testing:absltest",
+        ],
     )
 
 def _check_signature_for_modules_install(
@@ -90,7 +96,6 @@ def _check_signature_for_modules_install(
 
 def _create_one_device_modules_test(
         name,
-        srcs,
         arch,
         base_kernel_label,
         base_kernel_module,
@@ -110,6 +115,7 @@ def _create_one_device_modules_test(
                 . ${{ROOT_DIR}}/${{KERNEL_DIR}}/build.config.{cross_compiler_name}
 
                 {set_src_arch_cmd}
+                MAKE_GOALS="modules"
                 DEFCONFIG="device_modules_test_gki_defconfig"
                 PRE_DEFCONFIG_CMDS="mkdir -p \\${{OUT_DIR}}/arch/${{SRCARCH}}/configs/ && ( cat ${{ROOT_DIR}}/${{KERNEL_DIR}}/arch/${{SRCARCH}}/configs/gki_defconfig && echo '# CONFIG_MODULE_SIG_ALL is not set' ) > \\${{OUT_DIR}}/arch/${{SRCARCH}}/configs/${{DEFCONFIG}};"
                 POST_DEFCONFIG_CMDS=""
@@ -128,13 +134,11 @@ def _create_one_device_modules_test(
     kernel_build(
         name = name + "_kernel_build",
         tags = ["manual"],
-        srcs = srcs,
         arch = arch,
         build_config = name + "_build_config",
         outs = [],
         base_kernel = base_kernel_label,
         module_outs = module_outs,
-        make_goals = ["modules"],
     )
 
     kernel_modules_install(
@@ -159,7 +163,6 @@ def _create_one_device_modules_test(
 
 def device_modules_test(
         name,
-        srcs,
         base_kernel_label,
         base_kernel_module,
         arch):
@@ -169,7 +172,6 @@ def device_modules_test(
 
     Args:
         name: name of the test
-        srcs: `kernel_build.srcs`
         base_kernel_label: GKI kernel; must be a full [Label](https://bazel.build/rules/lib/Label).
         base_kernel_module: Any module from `base_kernel`. If `base_kernel`
           does not contain any in-tree modules, this should be `None`, and
@@ -184,7 +186,6 @@ def device_modules_test(
     tests = []
     _create_one_device_modules_test(
         name = name + "_use_gki_module",
-        srcs = srcs,
         arch = arch,
         base_kernel_module = base_kernel_module,
         base_kernel_label = base_kernel_label,
@@ -194,7 +195,6 @@ def device_modules_test(
 
     _create_one_device_modules_test(
         name = name + "_use_device_module",
-        srcs = srcs,
         arch = arch,
         base_kernel_module = base_kernel_module,
         base_kernel_label = base_kernel_label,

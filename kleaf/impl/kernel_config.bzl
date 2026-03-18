@@ -21,11 +21,10 @@ load(":cache_dir.bzl", "cache_dir")
 load(
     ":common_providers.bzl",
     "KernelBuildOriginalEnvInfo",
-    "KernelConfigInfo",
+    "KernelEnvAndOutputsInfo",
     "KernelEnvAttrInfo",
     "KernelEnvInfo",
     "KernelEnvMakeGoalsInfo",
-    "KernelSerializedEnvInfo",
     "KernelToolchainInfo",
 )
 load(":config_utils.bzl", "config_utils")
@@ -38,6 +37,9 @@ load(":stamp.bzl", "stamp")
 load(":utils.bzl", "kernel_utils")
 
 visibility("//build/kernel/kleaf/...")
+
+# Name of raw symbol list under $OUT_DIR
+_RAW_KMI_SYMBOL_LIST_BELOW_OUT_DIR = "abi_symbollist.raw"
 
 def _determine_local_path(ctx, file_name, file_attr):
     """A local action that stores the path to sandboxed file to a file object"""
@@ -105,6 +107,30 @@ def _determine_system_trusted_key_path(ctx):
 
     return _determine_local_path(ctx, "trusted_key.pem", ctx.file.system_trusted_key)
 
+def _config_gcov(ctx):
+    """Return configs for GCOV.
+
+    Args:
+        ctx: ctx
+    Returns:
+        A struct, where `configs` is a list of arguments to `scripts/config`,
+        and `deps` is a list of input files.
+    """
+    gcov = ctx.attr.gcov[BuildSettingInfo].value
+
+    if not gcov:
+        return struct(configs = [], deps = [])
+    configs = [
+        _config.enable("GCOV_KERNEL"),
+        _config.enable("GCOV_PROFILE_ALL"),
+        # TODO(b/291710318) Allow section mismatch when using GCOV_PROFILE_ALL
+        #  modpost: vmlinux.o: section mismatch in reference: cpumask_andnot (section: .text) -> efi_systab_phys (section: .init.data)
+        _config.enable("SECTION_MISMATCH_WARN_ONLY"),
+        # TODO: Re-enable when https://github.com/ClangBuiltLinux/linux/issues/1778 is fixed.
+        _config.disable("CFI_CLANG"),
+    ]
+    return struct(configs = configs, deps = [])
+
 def _config_lto(ctx):
     """Return configs for LTO.
 
@@ -117,12 +143,6 @@ def _config_lto(ctx):
     lto_config_flag = ctx.attr.lto
 
     lto_configs = []
-
-    if lto_config_flag == "fast":
-        # buildifier: disable=print
-        print("\nWARNING: --lto=fast is deprecated. Falling back to none.")
-        lto_config_flag = "none"
-
     if lto_config_flag == "none":
         lto_configs += [
             _config.disable("LTO_CLANG"),
@@ -148,6 +168,15 @@ def _config_lto(ctx):
             _config.enable("LTO_CLANG_FULL"),
             _config.disable("THINLTO"),
         ]
+    elif lto_config_flag == "fast":
+        # Set lto=thin only if LTO full is enabled.
+        lto_configs += [
+            _config.enable_if(condition = "LTO_CLANG_FULL", config = "LTO_CLANG"),
+            _config.disable_if(condition = "LTO_CLANG_FULL", config = "LTO_NONE"),
+            _config.enable_if(condition = "LTO_CLANG_FULL", config = "LTO_CLANG_THIN"),
+            _config.enable_if(condition = "LTO_CLANG_FULL", config = "THINLTO"),
+            _config.disable_if(condition = "LTO_CLANG_FULL", config = "LTO_CLANG_FULL"),
+        ]
 
     return struct(configs = lto_configs, deps = [])
 
@@ -172,12 +201,6 @@ def _config_trim(ctx):
               IGNORED because --kgdb is set!".format(this_label = ctx.label))
         return struct(configs = [], deps = [])
 
-    if ctx.attr.debug[BuildSettingInfo].value:
-        # buildifier: disable=print
-        print("\nWARNING: {this_label}: Symbol trimming \
-              IGNORED because --debug is set!".format(this_label = ctx.label))
-        return struct(configs = [], deps = [])
-
     configs = [
         _config.disable("UNUSED_SYMBOLS"),
         _config.enable("TRIM_UNUSED_KSYMS"),
@@ -185,7 +208,7 @@ def _config_trim(ctx):
     return struct(configs = configs, deps = [])
 
 def _config_symbol_list(ctx):
-    """Return configs for `raw_symbol_list_path_file`.
+    """Return configs for `raw_symbol_list`.
 
     Args:
         ctx: ctx
@@ -199,6 +222,18 @@ def _config_symbol_list(ctx):
 
     if len(ctx.files.raw_kmi_symbol_list) > 1:
         fail("{}: raw_kmi_symbol_list must only provide at most one file".format(ctx.label))
+
+    if ctx.attr.rewrite_absolute_paths_in_config:
+        configs = [
+            _config.set_str(
+                "UNUSED_KSYMS_WHITELIST",
+                _RAW_KMI_SYMBOL_LIST_BELOW_OUT_DIR,
+            ),
+        ]
+        return struct(
+            configs = configs,
+            deps = [],
+        )
 
     raw_symbol_list_path_file = _determine_raw_symbollist_path(ctx)
     configs = [
@@ -228,10 +263,28 @@ def _config_keys(ctx):
         `deps` is a list of input files to kernel_config, and
         `extra_post_setup_deps` is a list of files for downstream targets.
     """
+    configs = []
+
+    if ctx.attr.rewrite_absolute_paths_in_config:
+        if ctx.file.module_signing_key:
+            configs.append(_config.set_str(
+                "MODULE_SIG_KEY",
+                ctx.file.module_signing_key.basename,
+            ))
+
+        if ctx.file.system_trusted_key:
+            configs.append(_config.set_str(
+                "SYSTEM_TRUSTED_KEYS",
+                ctx.file.system_trusted_key.basename,
+            ))
+
+        return struct(
+            configs = configs,
+            deps = [],
+        )
 
     module_signing_key_path_file = _determine_module_signing_key_path(ctx)
     system_trusted_key_path_file = _determine_system_trusted_key_path(ctx)
-    configs = []
     deps = []
     extra_post_setup_deps = []
     if module_signing_key_path_file:
@@ -265,15 +318,32 @@ def _config_kasan(ctx):
         A struct, where `configs` is a list of arguments to `scripts/config`,
         and `deps` is a list of input files.
     """
+    lto = ctx.attr.lto
     kasan = ctx.attr.kasan[BuildSettingInfo].value
 
     if not kasan:
         return struct(configs = [], deps = [])
 
+    if ctx.attr.kasan_sw_tags[BuildSettingInfo].value:
+        fail("{}: cannot have both --kasan and --kasan_sw_tags simultaneously".format(ctx.label))
+
+    if lto != "none":
+        fail("{}: --kasan requires --lto=none, but --lto is {}".format(ctx.label, lto))
+
     if trim_nonlisted_kmi_utils.get_value(ctx):
         fail("{}: --kasan requires trimming to be disabled".format(ctx.label))
 
-    return struct(configs = [], deps = [])
+    configs = [
+        _config.enable("KASAN"),
+        _config.enable("KASAN_INLINE"),
+        _config.enable("KCOV"),
+        _config.enable("PANIC_ON_WARN_DEFAULT_ENABLE"),
+        _config.disable("RANDOMIZE_BASE"),
+        _config.disable("KASAN_OUTLINE"),
+        _config.set_val("FRAME_WARN", 0),
+        _config.disable("SHADOW_CALL_STACK"),
+    ]
+    return struct(configs = configs, deps = [])
 
 def _config_kasan_sw_tags(ctx):
     """Return configs for --kasan_sw_tags.
@@ -284,34 +354,30 @@ def _config_kasan_sw_tags(ctx):
         A struct, where `configs` is a list of arguments to `scripts/config`,
         and `deps` is a list of input files.
     """
+    lto = ctx.attr.lto
     kasan_sw_tags = ctx.attr.kasan_sw_tags[BuildSettingInfo].value
 
     if not kasan_sw_tags:
         return struct(configs = [], deps = [])
 
+    if ctx.attr.kasan[BuildSettingInfo].value:
+        fail("{}: cannot have both --kasan and --kasan_sw_tags simultaneously".format(ctx.label))
+
+    if lto != "none":
+        fail("{}: --kasan_sw_tags requires --lto=none, but --lto is {}".format(ctx.label, lto))
+
     if trim_nonlisted_kmi_utils.get_value(ctx):
         fail("{}: --kasan_sw_tags requires trimming to be disabled".format(ctx.label))
 
-    return struct(configs = [], deps = [])
-
-def _config_kasan_generic(ctx):
-    """Return configs for --kasan_generic.
-
-    Args:
-        ctx: ctx
-    Returns:
-        A struct, where `configs` is a list of arguments to `scripts/config`,
-        and `deps` is a list of input files.
-    """
-    kasan_generic = ctx.attr.kasan_generic[BuildSettingInfo].value
-
-    if not kasan_generic:
-        return struct(configs = [], deps = [])
-
-    if trim_nonlisted_kmi_utils.get_value(ctx):
-        fail("{}: --kasan_generic requires trimming to be disabled".format(ctx.label))
-
-    return struct(configs = [], deps = [])
+    configs = [
+        _config.enable("KASAN"),
+        _config.enable("KASAN_SW_TAGS"),
+        _config.enable("KASAN_OUTLINE"),
+        _config.enable("PANIC_ON_WARN_DEFAULT_ENABLE"),
+        _config.disable("KASAN_HW_TAGS"),
+        _config.set_val("FRAME_WARN", 0),
+    ]
+    return struct(configs = configs, deps = [])
 
 def _config_kcsan(ctx):
     """Return configs for --kcsan.
@@ -322,15 +388,37 @@ def _config_kcsan(ctx):
         A struct, where `configs` is a list of arguments to `scripts/config`,
         and `deps` is a list of input files.
     """
+    lto = ctx.attr.lto
     kcsan = ctx.attr.kcsan[BuildSettingInfo].value
 
     if not kcsan:
         return struct(configs = [], deps = [])
 
+    if lto != "none":
+        fail("{}: --kcsan requires --lto=none, but --lto is {}".format(ctx.label, lto))
+
     if trim_nonlisted_kmi_utils.get_value(ctx):
         fail("{}: --kcsan requires trimming to be disabled".format(ctx.label))
 
-    return struct(configs = [], deps = [])
+    configs = [
+        _config.enable("KCSAN"),
+        _config.enable("KCSAN_VERBOSE"),
+        _config.disable("KCSAN_KCOV_BROKEN"),
+        _config.enable("KCOV"),
+        _config.enable("KCOV_ENABLE_COMPARISONS"),
+        _config.enable("PROVE_LOCKING"),
+        _config.disable("KASAN"),
+        _config.disable("KASAN_STACK"),
+        _config.enable("PANIC_ON_WARN_DEFAULT_ENABLE"),
+        _config.disable("RANDOMIZE_BASE"),
+        _config.set_val("FRAME_WARN", 0),
+        _config.disable("KASAN_HW_TAGS"),
+        _config.disable("CFI"),
+        _config.disable("CFI_PERMISSIVE"),
+        _config.disable("CFI_CLANG"),
+        _config.disable("SHADOW_CALL_STACK"),
+    ]
+    return struct(configs = configs, deps = [])
 
 def _reconfig(ctx):
     """Return a command and extra inputs to re-configure `.config` file."""
@@ -348,7 +436,7 @@ def _reconfig(ctx):
         _config_kcsan,
         _config_kasan,
         _config_kasan_sw_tags,
-        _config_kasan_generic,
+        _config_gcov,
         _config_keys,
         kgdb.get_scripts_config_args,
     ):
@@ -442,7 +530,19 @@ def _kernel_config_impl(ctx):
     outputs += cache_dir_step.outputs
     tools += cache_dir_step.tools
 
-    inputs.append(localversion_file)
+    sync_raw_kmi_symbol_list_cmd = ""
+    if ctx.attr.rewrite_absolute_paths_in_config and ctx.files.raw_kmi_symbol_list:
+        sync_raw_kmi_symbol_list_cmd = """
+            rsync -aL {raw_kmi_symbol_list} {out_dir}/{raw_kmi_symbol_list_below_out_dir}
+        """.format(
+            out_dir = out_dir.path,
+            raw_kmi_symbol_list = ctx.files.raw_kmi_symbol_list[0].path,
+            raw_kmi_symbol_list_below_out_dir = _RAW_KMI_SYMBOL_LIST_BELOW_OUT_DIR,
+        )
+        inputs += ctx.files.raw_kmi_symbol_list
+
+    # exclude keys in out_dir to avoid accidentally including them
+    # in the distribution.
 
     command = ctx.attr.env[KernelEnvInfo].setup + """
           {cache_dir_cmd}
@@ -459,7 +559,7 @@ def _kernel_config_impl(ctx):
         # Grab outputs
           rsync -aL ${{OUT_DIR}}/.config {out_dir}/.config
           rsync -aL ${{OUT_DIR}}/include/ {out_dir}/include/
-          rsync -aL {localversion_file} {out_dir}/localversion
+          {sync_raw_kmi_symbol_list_cmd}
 
         # Ensure reproducibility. The value of the real $ROOT_DIR is replaced in the setup script.
           sed -i'' -e 's:'"${{ROOT_DIR}}"':${{ROOT_DIR}}:g' {out_dir}/include/config/auto.conf.cmd
@@ -474,7 +574,7 @@ def _kernel_config_impl(ctx):
         cache_dir_cmd = cache_dir_step.cmd,
         cache_dir_post_cmd = cache_dir_step.post_cmd,
         reconfig_cmd = reconfig.cmd,
-        localversion_file = localversion_file.path,
+        sync_raw_kmi_symbol_list_cmd = sync_raw_kmi_symbol_list_cmd,
     )
 
     debug.print_scripts(ctx, command)
@@ -491,30 +591,61 @@ def _kernel_config_impl(ctx):
         execution_requirements = kernel_utils.local_exec_requirements(ctx),
     )
 
-    post_setup_deps = [out_dir] + reconfig.extra_post_setup_deps
+    post_setup_deps = [out_dir, localversion_file] + reconfig.extra_post_setup_deps
 
-    # <kernel_build>_config_setup.sh
-    serialized_env_info_setup_script = ctx.actions.declare_file("{name}/{name}_setup.sh".format(name = ctx.attr.name))
-    ctx.actions.write(
-        output = serialized_env_info_setup_script,
-        content = get_config_setup_command(
-            env_setup_command = ctx.attr.env[KernelEnvInfo].setup,
-            out_dir = out_dir,
-        ),
+    extra_restore_outputs_cmd = ""
+    if ctx.attr.rewrite_absolute_paths_in_config:
+        extra_restore_outputs_cmd = """
+           if [[ -f {out_dir}/{raw_kmi_symbol_list_below_out_dir} ]]; then
+                rsync -aL --chmod=F+w \\
+                    {out_dir}/{raw_kmi_symbol_list_below_out_dir} ${{OUT_DIR}}/
+           fi
+        """.format(
+            out_dir = out_dir.path,
+            raw_kmi_symbol_list_below_out_dir = _RAW_KMI_SYMBOL_LIST_BELOW_OUT_DIR,
+        )
+        for file in (ctx.file.module_signing_key, ctx.file.system_trusted_key):
+            if not file:
+                continue
+            extra_restore_outputs_cmd += """
+                rsync -aL {file} ${{OUT_DIR}}/{basename}
+            """.format(
+                file = file.path,
+                basename = file.basename,
+            )
+
+    post_setup = """
+           [ -z ${{OUT_DIR}} ] && echo "FATAL: configs post_env_info setup run without OUT_DIR set!" >&2 && exit 1
+         # Restore kernel config inputs
+           mkdir -p ${{OUT_DIR}}/include/
+           rsync -aL {out_dir}/.config ${{OUT_DIR}}/.config
+           rsync -aL --chmod=D+w {out_dir}/include/ ${{OUT_DIR}}/include/
+           rsync -aL --chmod=F+w {localversion_file} ${{OUT_DIR}}/localversion
+
+         # Restore real value of $ROOT_DIR in auto.conf.cmd
+           sed -i'' -e 's:${{ROOT_DIR}}:'"${{ROOT_DIR}}"':g' ${{OUT_DIR}}/include/config/auto.conf.cmd
+
+           {extra_restore_outputs_cmd}
+    """.format(
+        out_dir = out_dir.path,
+        localversion_file = localversion_file.path,
+        extra_restore_outputs_cmd = extra_restore_outputs_cmd,
     )
 
-    serialized_env_info = KernelSerializedEnvInfo(
-        setup_script = serialized_env_info_setup_script,
+    env_and_outputs_info = KernelEnvAndOutputsInfo(
+        get_setup_script = _env_and_outputs_get_setup_script,
         tools = ctx.attr.env[KernelEnvInfo].tools,
-        inputs = depset(post_setup_deps + [
-            serialized_env_info_setup_script,
-        ], transitive = transitive_inputs),
+        inputs = depset(post_setup_deps, transitive = transitive_inputs),
+        data = struct(
+            pre_setup = ctx.attr.env[KernelEnvInfo].setup,
+            post_setup = post_setup,
+        ),
     )
 
     config_script_ret = _get_config_script(ctx, inputs)
 
     return [
-        serialized_env_info,
+        env_and_outputs_info,
         ctx.attr.env[KernelEnvAttrInfo],
         ctx.attr.env[KernelEnvMakeGoalsInfo],
         ctx.attr.env[KernelToolchainInfo],
@@ -526,10 +657,25 @@ def _kernel_config_impl(ctx):
             executable = config_script_ret.executable,
             runfiles = config_script_ret.runfiles,
         ),
-        KernelConfigInfo(
-            env_setup_script = ctx.file.env,
-        ),
     ]
+
+def _env_and_outputs_get_setup_script(data, restore_out_dir_cmd):
+    """Setup script generator for `KernelEnvAndOutputsInfo`.
+
+    Args:
+        data: `data` from `KernelEnvAndOutputsInfo`
+        restore_out_dir_cmd: See `KernelEnvAndOutputsInfo`. Provided by user of the info.
+    Returns:
+        The setup script."""
+    return """
+        {pre_setup}
+        {restore_out_dir_cmd}
+        {post_setup}
+    """.format(
+        pre_setup = data.pre_setup,
+        restore_out_dir_cmd = restore_out_dir_cmd,
+        post_setup = data.post_setup,
+    )
 
 def _get_config_script(ctx, inputs):
     """Handles config.sh."""
@@ -587,35 +733,6 @@ def _get_config_script(ctx, inputs):
         runfiles = runfiles,
     )
 
-def get_config_setup_command(
-        env_setup_command,
-        out_dir):
-    """Returns the content of `<kernel_build>_config_setup.sh`, given the parameters.
-
-    Args:
-        env_setup_command: command to set up environment from `kernel_env`
-        out_dir: output directory from `kernel_config`
-    """
-
-    return """
-        {env_setup_command}
-        {eval_restore_out_dir_cmd}
-
-        [ -z ${{OUT_DIR}} ] && echo "FATAL: configs post_env_info setup run without OUT_DIR set!" >&2 && exit 1
-        # Restore kernel config inputs
-        mkdir -p ${{OUT_DIR}}/include/
-        rsync -aL {out_dir}/.config ${{OUT_DIR}}/.config
-        rsync -aL --chmod=D+w {out_dir}/include/ ${{OUT_DIR}}/include/
-        rsync -aL --chmod=F+w {out_dir}/localversion ${{OUT_DIR}}/localversion
-
-        # Restore real value of $ROOT_DIR in auto.conf.cmd
-        sed -i'' -e 's:${{ROOT_DIR}}:'"${{ROOT_DIR}}"':g' ${{OUT_DIR}}/include/config/auto.conf.cmd
-    """.format(
-        env_setup_command = env_setup_command,
-        eval_restore_out_dir_cmd = kernel_utils.eval_restore_out_dir_cmd(),
-        out_dir = out_dir.path,
-    )
-
 def _kernel_config_additional_attrs():
     return dicts.add(
         kernel_config_settings.of_kernel_config(),
@@ -639,7 +756,6 @@ kernel_config = rule(
                 KernelToolchainInfo,
             ],
             doc = "environment target that defines the kernel build environment",
-            allow_single_file = True,
         ),
         "srcs": attr.label_list(mandatory = True, doc = "kernel sources", allow_files = True),
         "raw_kmi_symbol_list": attr.label(
@@ -657,6 +773,9 @@ kernel_config = rule(
         "defconfig_fragments": attr.label_list(
             doc = "defconfig fragments",
             allow_files = True,
+        ),
+        "rewrite_absolute_paths_in_config": attr.bool(
+            doc = "rewrite absolute paths in .config as relative paths",
         ),
         "_write_depset": attr.label(
             default = "//build/kernel/kleaf/impl:write_depset",

@@ -14,21 +14,17 @@
 
 """Build kernel-uapi-headers.tar.gz."""
 
-load(":common_providers.bzl", "KernelSerializedEnvInfo")
+load(":common_providers.bzl", "KernelEnvAndOutputsInfo")
 load(":debug.bzl", "debug")
-load(
-    ":utils.bzl",
-    "kernel_utils",
-    "utils",
-)
+load(":utils.bzl", "utils")
 
 visibility("//build/kernel/kleaf/...")
 
 def _kernel_uapi_headers_impl(ctx):
     out_file = ctx.actions.declare_file("{}/kernel-uapi-headers.tar.gz".format(ctx.label.name))
 
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = ctx.attr.config[KernelSerializedEnvInfo],
+    command = ctx.attr.config[KernelEnvAndOutputsInfo].get_setup_script(
+        data = ctx.attr.config[KernelEnvAndOutputsInfo].data,
         restore_out_dir_cmd = utils.get_check_sandbox_cmd(),
     )
     command += """
@@ -46,8 +42,8 @@ def _kernel_uapi_headers_impl(ctx):
     )
     inputs = []
     transitive_inputs = [target.files for target in ctx.attr.srcs]
-    transitive_inputs.append(ctx.attr.config[KernelSerializedEnvInfo].inputs)
-    tools = ctx.attr.config[KernelSerializedEnvInfo].tools
+    transitive_inputs.append(ctx.attr.config[KernelEnvAndOutputsInfo].inputs)
+    tools = ctx.attr.config[KernelEnvAndOutputsInfo].tools
 
     debug.print_scripts(ctx, command)
     ctx.actions.run_shell(
@@ -70,7 +66,7 @@ kernel_uapi_headers = rule(
         "srcs": attr.label_list(allow_files = True),
         "config": attr.label(
             mandatory = True,
-            providers = [KernelSerializedEnvInfo],
+            providers = [KernelEnvAndOutputsInfo],
             doc = "the kernel_config target",
         ),
         "_debug_print_scripts": attr.label(default = "//build/kernel/kleaf:debug_print_scripts"),

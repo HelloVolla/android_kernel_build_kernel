@@ -15,16 +15,15 @@
 A rule that runs depmod in the module installation directory.
 """
 
-load("@bazel_skylib//lib:paths.bzl", "paths")
 load("//build/kernel/kleaf:directory_with_structure.bzl", dws = "directory_with_structure")
 load(
     ":common_providers.bzl",
     "KernelBuildExtModuleInfo",
     "KernelBuildInfo",
     "KernelCmdsInfo",
+    "KernelEnvAndOutputsInfo",
     "KernelImagesInfo",
     "KernelModuleInfo",
-    "KernelSerializedEnvInfo",
 )
 load(":debug.bzl", "debug")
 load(
@@ -34,15 +33,6 @@ load(
 )
 
 visibility("//build/kernel/kleaf/...")
-
-# To avoid being abused, output is limited to modules.* files
-_OUT_ALLOWLIST = [
-    "modules.dep",
-    "modules.alias",
-    "modules.builtin",
-    "modules.symbols",
-    "modules.softdep",
-]
 
 def _kernel_modules_install_impl(ctx):
     kernel_build_infos = None
@@ -62,9 +52,6 @@ def _kernel_modules_install_impl(ctx):
 
     # A list of declared files for outputs of kernel_module rules
     external_modules = []
-
-    # A list of additional files other than kernel modules.
-    outs = []
 
     # TODO(b/256688440): Avoid depset[directory_with_structure] to_list
     modules_staging_dws_depset = depset(transitive = [
@@ -89,33 +76,21 @@ def _kernel_modules_install_impl(ctx):
         declared_file = ctx.actions.declare_file("{}/{}".format(ctx.label.name, module_file.basename))
         external_modules.append(declared_file)
 
-    for out in ctx.attr.outs:
-        if out not in _OUT_ALLOWLIST:
-            fail(
-                """{}: {} is not allowed in outs.
-                Please refer to the list of allowed files {}""".format(
-                    ctx.label,
-                    out,
-                    _OUT_ALLOWLIST,
-                ),
-            )
-        out_file = ctx.actions.declare_file("{}/{}".format(ctx.label.name, out))
-        outs.append(out_file)
-
     transitive_inputs = [
-        kernel_build_infos.ext_module_info.modinst_env.inputs,
+        kernel_build_infos.ext_module_info.module_scripts,
+        kernel_build_infos.ext_module_info.modules_install_env_and_outputs_info.inputs,
     ]
 
     tools = [
         ctx.executable._check_duplicated_files_in_archives,
         ctx.executable._search_and_cp_output,
     ]
-    transitive_tools = [kernel_build_infos.ext_module_info.modinst_env.tools]
+    transitive_tools = [kernel_build_infos.ext_module_info.modules_install_env_and_outputs_info.tools]
 
     modules_staging_dws = dws.make(ctx, "{}/staging".format(ctx.label.name))
 
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = kernel_build_infos.ext_module_info.modinst_env,
+    command = kernel_build_infos.ext_module_info.modules_install_env_and_outputs_info.get_setup_script(
+        data = kernel_build_infos.ext_module_info.modules_install_env_and_outputs_info.data,
         restore_out_dir_cmd = utils.get_check_sandbox_cmd(),
     )
     command += """
@@ -157,11 +132,14 @@ def _kernel_modules_install_impl(ctx):
              # Run depmod
                (
                  cd ${{OUT_DIR}} # for System.map when mixed_build_prefix is not set
-                 depmod -ae -F "${{mixed_build_prefix}}System.map" -b "${{real_modules_staging_dir}}" ${{kernelrelease}}
+                 INSTALL_MOD_PATH=${{real_modules_staging_dir}} ${{ROOT_DIR}}/${{KERNEL_DIR}}/scripts/depmod.sh depmod ${{kernelrelease}} ${{mixed_build_prefix}}
                )
              # Remove symlinks that are dead outside of the sandbox
                (
-                 find "{modules_staging_dir}/lib/modules/" -maxdepth 2 -mindepth 2 \\( -name source -o -name build \\) -type l -delete > /dev/null
+                 symlink="$(ls {modules_staging_dir}/lib/modules/*/source)"
+                 if [[ -n "$symlink" ]] && [[ -L "$symlink" ]]; then rm "$symlink"; fi
+                 symlink="$(ls {modules_staging_dir}/lib/modules/*/build)"
+                 if [[ -n "$symlink" ]] && [[ -L "$symlink" ]]; then rm "$symlink"; fi
                )
     """.format(
         modules_staging_archives = " ".join(
@@ -184,17 +162,6 @@ def _kernel_modules_install_impl(ctx):
             search_and_cp_output = ctx.executable._search_and_cp_output.path,
         )
 
-    command += """
-        # Move additional files to declared output location
-        for out in {outs}; do
-            cp -pL {modules_staging_dir}/lib/modules/*/${{out}} {outdir}
-        done
-    """.format(
-        modules_staging_dir = modules_staging_dws.directory.path,
-        outdir = paths.join(utils.package_bin_dir(ctx), ctx.attr.name),
-        outs = " ".join(ctx.attr.outs),
-    )
-
     command += dws.record(modules_staging_dws)
 
     debug.print_scripts(ctx, command)
@@ -202,7 +169,7 @@ def _kernel_modules_install_impl(ctx):
         mnemonic = "KernelModulesInstall",
         inputs = depset(inputs, transitive = transitive_inputs),
         tools = depset(tools, transitive = transitive_tools),
-        outputs = external_modules + dws.files(modules_staging_dws) + outs,
+        outputs = external_modules + dws.files(modules_staging_dws),
         command = command,
         progress_message = "Running depmod {}".format(ctx.label),
     )
@@ -218,7 +185,7 @@ def _kernel_modules_install_impl(ctx):
     )
 
     return [
-        DefaultInfo(files = depset(external_modules + outs)),
+        DefaultInfo(files = depset(external_modules)),
         KernelModuleInfo(
             kernel_build_infos = kernel_build_infos,
             modules_staging_dws_depset = depset([modules_staging_dws]),
@@ -227,10 +194,6 @@ def _kernel_modules_install_impl(ctx):
                 for target in ctx.attr.kernel_modules
             ]),
             label = ctx.label,
-            modules_order = depset(transitive = [
-                target[KernelModuleInfo].modules_order
-                for target in ctx.attr.kernel_modules
-            ], order = "postorder"),
         ),
         cmds_info,
     ]
@@ -277,7 +240,7 @@ In `foo_dist`, specifying `foo_modules_install` in `data` won't include
                 KernelBuildExtModuleInfo,
                 # Needed by KernelModuleInfo.kernel_build
                 # TODO(b/247622808): Should put the info in KernelModuleInfo directly.
-                KernelSerializedEnvInfo,
+                KernelEnvAndOutputsInfo,
                 KernelBuildInfo,
                 KernelImagesInfo,
             ],
@@ -296,28 +259,6 @@ In `foo_dist`, specifying `foo_modules_install` in `data` won't include
             cfg = "exec",
             executable = True,
             doc = "Label referring to the script to process outputs",
-        ),
-        "outs": attr.string_list(
-            doc = """ A list of additional outputs from `make modules_install`.
-
-Since external modules are returned by default,
-it can be used to obtain modules.* related files (results of depmod).
-Only files with allowed names can be added to outs. (`_OUT_ALLOWLIST`)
-```
-_OUT_ALLOWLIST = {}
-```
-Example:
-```
-kernel_modules_install(
-    name = "foo_modules_install",
-    kernel_modules = [":foo_module_list"],
-    outs = [
-        "modules.dep",
-        "modules.alias",
-    ],
-)
-```
-""".format(repr(_OUT_ALLOWLIST)),
         ),
     },
 )

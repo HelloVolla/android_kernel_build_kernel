@@ -23,7 +23,7 @@ load(
     "KernelModuleInfo",
 )
 load(":debug.bzl", "debug")
-load(":utils.bzl", "kernel_utils", "utils")
+load(":utils.bzl", "utils")
 
 visibility("//build/kernel/kleaf/...")
 
@@ -68,8 +68,8 @@ def _build_modules_image_impl_common(
     kernel_build_outs = depset(
         transitive = [
             # Prefer device kernel_build, then base kernel_build
-            kernel_build_infos.images_info.outs,
-            kernel_build_infos.images_info.base_kernel_files,
+            kernel_build_infos.kernel_build_info.outs,
+            kernel_build_infos.kernel_build_info.base_kernel_files,
         ],
         order = "preorder",
     )
@@ -101,30 +101,27 @@ def _build_modules_image_impl_common(
     if restore_modules_install:
         inputs += dws.files(modules_install_staging_dws)
     inputs += ctx.files.deps
-    transitive_inputs = [kernel_build_infos.serialized_env_info.inputs]
-    tools = kernel_build_infos.serialized_env_info.tools
+    transitive_inputs = [kernel_build_infos.env_and_outputs_info.inputs]
+    tools = kernel_build_infos.env_and_outputs_info.tools
 
     command_outputs = []
     command_outputs += outputs
     if implicit_outputs != None:
         command_outputs += implicit_outputs
 
-    command = kernel_utils.setup_serialized_env_cmd(
-        serialized_env_info = kernel_build_infos.serialized_env_info,
+    command = kernel_build_infos.env_and_outputs_info.get_setup_script(
+        data = kernel_build_infos.env_and_outputs_info.data,
         restore_out_dir_cmd = utils.get_check_sandbox_cmd(),
     )
 
     for attr_name in (
         "modules_list",
-        "modules_recovery_list",
-        "modules_charger_list",
         "modules_blocklist",
         "vendor_dlkm_fs_type",
         "vendor_dlkm_modules_list",
         "vendor_dlkm_modules_blocklist",
         "vendor_dlkm_props",
         "system_dlkm_fs_type",
-        "system_dlkm_fs_types",
         "system_dlkm_modules_list",
         "system_dlkm_modules_blocklist",
         "system_dlkm_props",
@@ -164,18 +161,6 @@ def _build_modules_image_impl_common(
             options = "-al --chmod=F+w --include=source --include=build --exclude='*'",
         )
 
-    modules_order_cmd = ""
-    if ctx.attr.create_modules_order:
-        modules_order_depset = ctx.attr.kernel_modules_install[KernelModuleInfo].modules_order
-        modules_order_depset_list = modules_order_depset.to_list()
-        inputs += modules_order_depset_list
-        modules_order_cmd = """
-            cat {modules_order} > kleaf_modules.order
-            KLEAF_MODULES_ORDER=kleaf_modules.order
-        """.format(
-            modules_order = " ".join([modules_order.path for modules_order in modules_order_depset_list]),
-        )
-
     if set_ext_modules and ctx.attr._set_ext_modules[BuildSettingInfo].value:
         ext_modules = ctx.attr.kernel_modules_install[KernelModuleInfo].packages.to_list()
         command += """EXT_MODULES={quoted_ext_modules}""".format(
@@ -193,11 +178,9 @@ file a bug.""")
                mkdir -p ${{DIST_DIR}}
                cp {system_map} ${{DIST_DIR}}/System.map
 
-               {modules_order_cmd}
                {build_command}
     """.format(
         system_map = system_map.path,
-        modules_order_cmd = modules_order_cmd,
         build_command = build_command,
     )
 
@@ -227,12 +210,6 @@ def _build_modules_image_attrs_common(additional = None):
         ),
         "_set_ext_modules": attr.label(
             default = "//build/kernel/kleaf:set_ext_modules",
-        ),
-        "create_modules_order": attr.bool(
-            default = True,
-            doc = """Whether to create and keep a modules.order file generated
-                by a postorder traversal of the `kernel_modules_install` sources.
-                It defaults to `True`.""",
         ),
     }
     if additional != None:
